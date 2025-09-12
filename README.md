@@ -56,6 +56,51 @@ cargo run --release --bin proof -- \
   --asset 0xYourAssetBytes32 \
   --pretty
 ```
+# End-to-End Workflow (Simple Guide)
+
+## Concepts
+- Batch proof (SP1 proof): Proves the entire settlement and advances state roots.
+  - Public values: `balancesRoot`, `prevFilledRoot`, `filledRoot`, `matchCount`.
+  - On‑chain updates both `balancesRoot` and `filledRoot` atomically, requiring `prevFilledRoot == filledRoot`.
+- Membership proof (Merkle proof): Per user; proves their cumulative_owed under the current `balancesRoot` to withdraw.
+
+## Binaries You Have
+- `script/bin/defi`: runs/proves a sample batch (prints `balancesRoot`, `prevFilledRoot`, `filledRoot`).
+- `script/bin/leaves`: builds the leaves dataset and Merkle root from input (either sample or a JSON file).
+- `script/bin/proof`: generates a Merkle proof for a specific `(owner, asset)` from a leaves JSON.
+
+## Quick Start (Sample Batch)
+1) Generate the SP1 batch proof and get the roots
+- `cd script`
+- `cargo run --release -- --prove --sample`
+- Copy the printed `balancesRoot`, `prevFilledRoot`, `filledRoot` and the raw `publicValues` (for on‑chain update).
+
+2) Build the leaves dataset for the same batch and check the root matches
+- `cargo run --release --bin leaves -- --sample --out leaves.json --pretty`
+- Open `leaves.json` and confirm `root` equals the `balancesRoot` from step 1.
+
+3) Generate a user’s Merkle proof (to withdraw later)
+- Pick an `owner` and `asset` from `leaves.json`.
+- `cargo run --release --bin proof -- --file leaves.json --owner 0xOwner20 --asset 0xAsset32 --pretty`
+- Output includes: `amount` (this equals cumulative_owed), `root`, and `proof[]` (siblings).
+
+## On-Chain (Sample Batch)
+4) Update the on-chain roots (batch proof)
+- Call your Solidity `updateRoot(proof, publicValues)` (see `contact/Ledger.sol`).
+- The contract verifies the proof and requires `prevFilledRoot` in `publicValues` to equal the stored `filledRoot`, then updates both `balancesRoot` and `filledRoot` to the new values.
+- This uses the SP1 proof from step 1, not the Merkle proof.
+
+5) Withdraw (membership proof)
+- Call `withdraw(owner, asset, cumulativeOwed, amountToWithdraw, proof[])` using the output from the `proof` CLI (`amount` → `cumulativeOwed`).
+
+
+
+## What to Remember
+- SP1 proof = for the batch (updates `balancesRoot` and `filledRoot` on-chain; binds to `prevFilledRoot`).
+- Merkle proof = per user (withdraws against the current `balancesRoot`).
+- cumulative_owed model: contract tracks `spent[owner][asset]`; withdraw allowed iff `spent + amountToWithdraw <= cumulativeOwed`.
+- Roots must match: `leaves.json.root` must equal the `balancesRoot` printed by `defi` (or your custom batch prover) for that batch.
+
 
 ## Using the Prover Network
 
