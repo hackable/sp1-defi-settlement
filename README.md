@@ -86,7 +86,7 @@ cargo run --release --bin proof -- \
 
 ## On-Chain (Sample Batch)
 4) Update the on-chain roots (batch proof)
-- Call your Solidity `updateRoot(proof, publicValues)` (see `contact/Ledger.sol`).
+- Call your Solidity `updateRoot(proof, publicValues)` (see `contracts/Ledger.sol`).
 - The contract verifies the proof and requires `prevFilledRoot` in `publicValues` to equal the stored `filledRoot`, then updates both `balancesRoot` and `filledRoot` to the new values.
 - This uses the SP1 proof from step 1, not the Merkle proof.
 

@@ -1,10 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-interface ISP1Verifier {
-    function verify(bytes calldata proof, bytes calldata publicValues) external view returns (bool);
-}
-
+interface ISP1Verifier { function verify(bytes calldata proof, bytes calldata publicValues) external view returns (bool); }
 interface IERC20 { function transfer(address to, uint256 amount) external returns (bool); }
 
 library BalancesLeaf {
@@ -28,9 +25,9 @@ library MerkleProofSorted {
 contract Ledger {
     ISP1Verifier public immutable verifier;
     bytes32 public balancesRoot;
-    bytes32 public filledRoot; // cumulative filled per orderId
+    bytes32 public filledRoot;
 
-    mapping(address => mapping(bytes32 => uint256)) public spent; // cumulative_owed model
+    mapping(address => mapping(bytes32 => uint256)) public spent;
 
     event RootUpdated(bytes32 indexed oldBalancesRoot, bytes32 indexed newBalancesRoot, bytes32 prevFilledRoot, bytes32 newFilledRoot, uint32 matchCount);
     event Withdrawn(bytes32 indexed root, address indexed owner, bytes32 indexed asset, uint256 amount);
@@ -41,26 +38,19 @@ contract Ledger {
         filledRoot = _genesisFilledRoot;
     }
 
-    /// publicValues ABI: (bytes32 balancesRoot, bytes32 prevFilledRoot, bytes32 filledRoot, uint32 matchCount)
+    // publicValues ABI: (bytes32 balancesRoot, bytes32 prevFilledRoot, bytes32 filledRoot, uint32 matchCount)
     function updateRoot(bytes calldata proof, bytes calldata publicValues) external {
         require(verifier.verify(proof, publicValues), "invalid proof");
         (bytes32 newBalancesRoot, bytes32 prevFilledRoot, bytes32 newFilledRoot, uint32 matchCount) =
             abi.decode(publicValues, (bytes32, bytes32, bytes32, uint32));
         require(prevFilledRoot == filledRoot, "filled root mismatch");
-
         bytes32 oldBalancesRoot = balancesRoot;
         balancesRoot = newBalancesRoot;
         filledRoot = newFilledRoot;
         emit RootUpdated(oldBalancesRoot, newBalancesRoot, prevFilledRoot, newFilledRoot, matchCount);
     }
 
-    function withdraw(
-        address owner,
-        bytes32 asset,
-        uint128 cumulativeOwed,
-        uint256 amountToWithdraw,
-        bytes32[] calldata proof
-    ) external {
+    function withdraw(address owner, bytes32 asset, uint128 cumulativeOwed, uint256 amountToWithdraw, bytes32[] calldata proof) external {
         require(msg.sender == owner, "only owner");
         bytes32 leaf = BalancesLeaf.leafHash(owner, asset, cumulativeOwed);
         require(MerkleProofSorted.verify(proof, balancesRoot, leaf), "bad proof");

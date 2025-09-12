@@ -22,7 +22,7 @@ All notable changes to this repository will be documented in this file.
     - Flags: `--execute|--prove`, `--sample`, `--export <path>`, `--export-only`.
   - `leaves`: compute balances leaves + root from a SettlementInput JSON or built-in sample.
   - `proof`: generate a Merkle proof for (owner, asset) from a leaves JSON.
-- Solidity example (docs/OrderbookLedger.sol):
+- Solidity example (contracts/Ledger.sol):
   - Stores `balancesRoot` and `filledRoot`.
   - `updateRoot` verifies SP1 proof, requires `prevFilledRoot == filledRoot`, then atomically updates
     both roots.
