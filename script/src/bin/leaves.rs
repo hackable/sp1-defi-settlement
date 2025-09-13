@@ -125,7 +125,10 @@ fn input_to_native(j: JsonInput) -> Result<SettlementInput> {
     let prev_filled = vec![0u128; orders.len()];
     let mut prev_filled_root = [0u8; 32];
     prev_filled_root.copy_from_slice(&Keccak256::digest([]));
-    Ok(SettlementInput { domain, orders, matches, initial_balances, proposed_deltas, timestamp: to_u64(&j.timestamp)?, prev_filled_root, prev_filled })
+    // For optimized path, compute orders_root and leave touched empty (this CLI focuses on balances).
+    let order_ids: Vec<[u8; 32]> = orders.iter().map(|o| order_struct_hash(o)).collect();
+    let orders_root = orders_root_from_list(&order_ids);
+    Ok(SettlementInput { domain, orders, matches, initial_balances, proposed_deltas, timestamp: to_u64(&j.timestamp)?, prev_filled_root, prev_filled, orders_root, touched: vec![] })
 }
 
 fn leaf_hash(owner: Address, asset: Asset, amount: u128) -> [u8; 32] {
@@ -215,6 +218,48 @@ fn main() -> Result<()> {
         println!("{}", s);
     }
     Ok(())
+}
+
+fn orders_root_from_list(order_ids: &[[u8; 32]]) -> [u8; 32] {
+    if order_ids.is_empty() { let mut r=[0u8;32]; r.copy_from_slice(&Keccak256::digest([])); return r; }
+    // Build leaves from orderIds and sorted-pair keccak
+    let mut leaves: Vec<[u8; 32]> = order_ids.iter().map(|oid| {
+        let mut h = Keccak256::new();
+        h.update(oid);
+        let out = h.finalize();
+        let mut a = [0u8; 32];
+        a.copy_from_slice(&out);
+        a
+    }).collect();
+    // sort leaves by orderId (order_ids sorted)
+    let mut pairs: Vec<([u8; 32], [u8; 32])> = order_ids.iter().copied().zip(leaves.iter().copied()).collect();
+    pairs.sort_by(|a, b| a.0.cmp(&b.0));
+    leaves = pairs.into_iter().map(|(_, l)| l).collect();
+    let mut level = leaves;
+    while level.len() > 1 {
+        let mut next: Vec<[u8; 32]> = Vec::with_capacity((level.len() + 1) / 2);
+        let mut i = 0;
+        while i < level.len() {
+            if i + 1 < level.len() {
+                let a = level[i];
+                let b = level[i + 1];
+                let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+                let mut h = Keccak256::new();
+                h.update(lo);
+                h.update(hi);
+                let out = h.finalize();
+                let mut parent = [0u8; 32];
+                parent.copy_from_slice(&out);
+                next.push(parent);
+                i += 2;
+            } else {
+                next.push(level[i]);
+                i += 1;
+            }
+        }
+        level = next;
+    }
+    level[0]
 }
 
 // ===== Sample input (same as in docs/tests) =====
@@ -380,5 +425,7 @@ fn build_sample_input() -> SettlementInput {
     let prev_filled = vec![0u128, 0u128];
     let mut prev_filled_root = [0u8; 32];
     prev_filled_root.copy_from_slice(&Keccak256::digest([]));
-    SettlementInput { domain, orders: vec![buy, sell], matches, initial_balances, proposed_deltas, timestamp: 0, prev_filled_root, prev_filled }
+    let order_ids = vec![order_struct_hash(&buy), order_struct_hash(&sell)];
+    let orders_root = orders_root_from_list(&order_ids);
+    SettlementInput { domain, orders: vec![buy, sell], matches, initial_balances, proposed_deltas, timestamp: 0, prev_filled_root, prev_filled, orders_root, touched: vec![] }
 }

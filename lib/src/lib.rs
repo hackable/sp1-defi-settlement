@@ -91,6 +91,18 @@ pub mod defi {
         // Previous cumulative filled per order (aligned with orders). For now, proofs to prev_filled_root
         // are out of scope; the guest will compute the new root from these values + this batch fills.
         pub prev_filled: Vec<u128>,
+        // Optimized inputs: orders root and per-order proofs for touched orders.
+        pub orders_root: [u8; 32],
+        pub touched: Vec<TouchedProof>,
+    }
+
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    pub struct TouchedProof {
+        pub order_index: u32,
+        pub order_id: [u8; 32],
+        pub prev_filled: u128,
+        pub filled_proof: Vec<[u8; 32]>,
+        pub orders_proof: Vec<[u8; 32]>,
     }
 
     #[derive(Clone, Debug)]
@@ -102,6 +114,44 @@ pub mod defi {
     }
 
     pub fn verify_settlement(input: &SettlementInput) -> Result<SettlementOutput, String> {
+        // Verify per-order proofs for all touched orders and ensure coverage of matched indices.
+        // Build map: index -> proof
+        let mut touched_map = BTreeMap::new();
+        for tp in &input.touched {
+            if (tp.order_index as usize) >= input.orders.len() {
+                return Err("touched order_index out of bounds".to_string());
+            }
+            // Verify ordersRoot inclusion
+            let ord = &input.orders[tp.order_index as usize];
+            let oid_calc = order_struct_hash(ord);
+            if oid_calc != tp.order_id {
+                return Err("touched order_id mismatch".to_string());
+            }
+            let order_leaf = hash_order_leaf(tp.order_id);
+            if !verify_merkle_proof_sorted_keccak(order_leaf, &tp.orders_proof, input.orders_root) {
+                return Err("ordersRoot inclusion proof failed".to_string());
+            }
+            // Verify prevFilledRoot inclusion for prev value
+            // Prefer provided prev_filled in touched; must match input.prev_filled list for consistency.
+            let prev_list = *input.prev_filled.get(tp.order_index as usize).unwrap_or(&0);
+            if prev_list != tp.prev_filled {
+                return Err("prev_filled mismatch between list and touched proof".to_string());
+            }
+            let filled_leaf_prev = hash_filled_leaf(tp.order_id, tp.prev_filled);
+            if !verify_merkle_proof_sorted_keccak(filled_leaf_prev, &tp.filled_proof, input.prev_filled_root) {
+                return Err("prevFilledRoot inclusion proof failed".to_string());
+            }
+            touched_map.insert(tp.order_index as usize, tp);
+        }
+        // Ensure all matched order indices are covered by touched proofs.
+        for m in &input.matches {
+            let bi = m.buy_idx as usize;
+            let si = m.sell_idx as usize;
+            if !touched_map.contains_key(&bi) || !touched_map.contains_key(&si) {
+                return Err("missing touched proof for matched order".to_string());
+            }
+        }
+
         // Perform full validation using snapshot balances logic (non-negativity, limits, deltas).
         let _final_entries = compute_final_entries(input)?;
         // Commit cumulative_owed root (monotonic credits per (owner, asset)).
@@ -492,6 +542,40 @@ pub mod defi {
             level = next;
         }
         level[0]
+    }
+
+    // --- Merkle helpers (sorted-pair Keccak) ---
+    fn keccak(bytes: &[u8]) -> [u8; 32] {
+        let mut h = Keccak256::new();
+        h.update(bytes);
+        let out = h.finalize();
+        let mut a = [0u8; 32];
+        a.copy_from_slice(&out);
+        a
+    }
+
+    fn hash_order_leaf(order_id: [u8; 32]) -> [u8; 32] { keccak(&order_id) }
+
+    fn hash_filled_leaf(order_id: [u8; 32], cumulative_filled: u128) -> [u8; 32] {
+        let mut buf = [0u8; 48];
+        buf[..32].copy_from_slice(&order_id);
+        buf[32..].copy_from_slice(&cumulative_filled.to_be_bytes());
+        keccak(&buf)
+    }
+
+    fn fold_sorted_pair(a: [u8; 32], b: [u8; 32]) -> [u8; 32] {
+        let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+        let mut buf = [0u8; 64];
+        buf[..32].copy_from_slice(&lo);
+        buf[32..].copy_from_slice(&hi);
+        keccak(&buf)
+    }
+
+    fn verify_merkle_proof_sorted_keccak(mut leaf: [u8; 32], proof: &[[u8; 32]], root: [u8; 32]) -> bool {
+        for sib in proof {
+            leaf = fold_sorted_pair(leaf, *sib);
+        }
+        leaf == root
     }
 
     fn eip712_domain_separator(domain: &Domain) -> [u8; 32] {

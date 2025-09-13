@@ -97,6 +97,15 @@ fn filled_leaf(order_hash: [u8; 32], amount: u128) -> [u8; 32] {
     leaf
 }
 
+fn hash_order_leaf(order_id: [u8; 32]) -> [u8; 32] {
+    let mut h = Keccak256::new();
+    h.update(order_id);
+    let out = h.finalize();
+    let mut a = [0u8; 32];
+    a.copy_from_slice(&out);
+    a
+}
+
 fn sign_order(order: &Order, domain: &Domain, sk: &SigningKey) -> (u8, [u8; 32], [u8; 32]) {
     let domain_sep = eip712_domain_separator(domain);
     let struct_hash = order_struct_hash(order);
@@ -218,13 +227,23 @@ fn build_sample_input() -> SettlementInput {
     ];
 
     let prev_filled = vec![0u128, 0u128];
-    // Compute prev_filled_root by sorting leaves by order hash
+    // Compute prev_filled_root and orders_root and touched proofs (2-leaf trivial proofs)
     let buy_hash = order_struct_hash(&buy);
     let sell_hash = order_struct_hash(&sell);
     let mut entries = vec![(buy_hash, filled_leaf(buy_hash, 0)), (sell_hash, filled_leaf(sell_hash, 0))];
     entries.sort_by(|a, b| a.0.cmp(&b.0));
-    let prev_filled_root = merkle_root_sorted(entries.into_iter().map(|(_, l)| l).collect());
-    SettlementInput { domain, orders: vec![buy, sell], matches, initial_balances, proposed_deltas, timestamp: 0, prev_filled_root, prev_filled }
+    let prev_filled_root = merkle_root_sorted(entries.iter().map(|(_, l)| *l).collect());
+    let orders_root = merkle_root_sorted(vec![hash_order_leaf(buy_hash), hash_order_leaf(sell_hash)]);
+    // Proofs: sibling leaf
+    let filled_proof_buy = vec![filled_leaf(sell_hash, 0)];
+    let filled_proof_sell = vec![filled_leaf(buy_hash, 0)];
+    let orders_proof_buy = vec![hash_order_leaf(sell_hash)];
+    let orders_proof_sell = vec![hash_order_leaf(buy_hash)];
+    let touched = vec![
+        defi_lib::defi::TouchedProof { order_index: 0, order_id: buy_hash, prev_filled: 0, filled_proof: filled_proof_buy, orders_proof: orders_proof_buy },
+        defi_lib::defi::TouchedProof { order_index: 1, order_id: sell_hash, prev_filled: 0, filled_proof: filled_proof_sell, orders_proof: orders_proof_sell },
+    ];
+    SettlementInput { domain, orders: vec![buy, sell], matches, initial_balances, proposed_deltas, timestamp: 0, prev_filled_root, prev_filled, orders_root, touched }
 }
 
 #[test]

@@ -26,28 +26,44 @@ contract Ledger {
     ISP1Verifier public immutable verifier;
     bytes32 public balancesRoot;
     bytes32 public filledRoot;
+    bytes32 public cancellationsRoot; // set of canceled orderIds (root)
 
     mapping(address => mapping(bytes32 => uint256)) public spent;
 
-    event RootUpdated(bytes32 indexed oldBalancesRoot, bytes32 indexed newBalancesRoot, bytes32 prevFilledRoot, bytes32 newFilledRoot, uint32 matchCount);
+    event RootUpdated(
+        bytes32 indexed oldBalancesRoot,
+        bytes32 indexed newBalancesRoot,
+        bytes32 prevFilledRoot,
+        bytes32 newFilledRoot,
+        bytes32 cancellationsRoot,
+        uint32 matchCount
+    );
     event Withdrawn(bytes32 indexed root, address indexed owner, bytes32 indexed asset, uint256 amount);
 
-    constructor(address _verifier, bytes32 _genesisBalancesRoot, bytes32 _genesisFilledRoot) {
+    constructor(address _verifier, bytes32 _genesisBalancesRoot, bytes32 _genesisFilledRoot, bytes32 _genesisCancellationsRoot) {
         verifier = ISP1Verifier(_verifier);
         balancesRoot = _genesisBalancesRoot;
         filledRoot = _genesisFilledRoot;
+        cancellationsRoot = _genesisCancellationsRoot;
     }
 
-    // publicValues ABI: (bytes32 balancesRoot, bytes32 prevFilledRoot, bytes32 filledRoot, uint32 matchCount)
+    // publicValues ABI: (bytes32 balancesRoot, bytes32 prevFilledRoot, bytes32 filledRoot, bytes32 cancellationsRoot, uint32 matchCount)
     function updateRoot(bytes calldata proof, bytes calldata publicValues) external {
         require(verifier.verify(proof, publicValues), "invalid proof");
-        (bytes32 newBalancesRoot, bytes32 prevFilledRoot, bytes32 newFilledRoot, uint32 matchCount) =
-            abi.decode(publicValues, (bytes32, bytes32, bytes32, uint32));
+        (bytes32 newBalancesRoot, bytes32 prevFilledRoot, bytes32 newFilledRoot, bytes32 cancRoot, uint32 matchCount) =
+            abi.decode(publicValues, (bytes32, bytes32, bytes32, bytes32, uint32));
         require(prevFilledRoot == filledRoot, "filled root mismatch");
+        // Bind to the current cancellations view so the proof cannot ignore cancels.
+        require(cancRoot == cancellationsRoot, "cancellations root mismatch");
         bytes32 oldBalancesRoot = balancesRoot;
         balancesRoot = newBalancesRoot;
         filledRoot = newFilledRoot;
-        emit RootUpdated(oldBalancesRoot, newBalancesRoot, prevFilledRoot, newFilledRoot, matchCount);
+        emit RootUpdated(oldBalancesRoot, newBalancesRoot, prevFilledRoot, newFilledRoot, cancellationsRoot, matchCount);
+    }
+
+    // Optional: admin hook to update cancellationsRoot (e.g., after on-chain cancels); add access control as needed.
+    function setCancellationsRoot(bytes32 newCancellationsRoot) external {
+        cancellationsRoot = newCancellationsRoot;
     }
 
     function withdraw(address owner, bytes32 asset, uint128 cumulativeOwed, uint256 amountToWithdraw, bytes32[] calldata proof) external {
@@ -62,4 +78,3 @@ contract Ledger {
         emit Withdrawn(balancesRoot, owner, asset, amountToWithdraw);
     }
 }
-

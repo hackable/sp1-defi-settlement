@@ -2,7 +2,7 @@
 
 use alloy_sol_types::SolType;
 use clap::Parser;
-use defi_lib::defi::{Balance, Delta, Domain, MatchFill, Order, SettlementInput, Side};
+use defi_lib::defi::{Balance, Delta, Domain, MatchFill, Order, SettlementInput, Side, TouchedProof};
 use defi_lib::SettlementPublicValues;
 use k256::ecdsa::{signature::DigestSigner, Signature, SigningKey, VerifyingKey};
 use sha3::{Digest, Keccak256};
@@ -171,10 +171,52 @@ fn build_sample_input() -> SettlementInput {
 
     // Previous filled root/counters (assume no prior fills):
     let prev_filled = vec![0u128, 0u128];
-    // Compute prev_filled_root over all orders (including zeros) to match guest logic.
+    // Compute prev_filled_root and orders_root over both orders (including zeros) to match guest logic.
+    let order_ids = vec![order_struct_hash(&buy), order_struct_hash(&sell)];
     let prev_filled_root = filled_root_from_list(&[&buy, &sell], &prev_filled);
+    let orders_root = orders_root_from_list(&order_ids);
 
-    SettlementInput { domain, orders: vec![buy, sell], matches, initial_balances, proposed_deltas, timestamp: 0, prev_filled_root, prev_filled }
+    // Build simple proofs for 2-leaf trees (sibling is the other leaf) for both orders.
+    let orders_leaves: Vec<[u8; 32]> = order_ids.iter().map(|oid| hash_order_leaf(*oid)).collect();
+    let filled_leaves: Vec<[u8; 32]> = order_ids
+        .iter()
+        .zip(prev_filled.iter())
+        .map(|(oid, pf)| hash_filled_leaf(*oid, *pf))
+        .collect();
+    // Sort by order_id to match root building
+    let mut pairs: Vec<([u8; 32], usize)> = order_ids.iter().copied().zip(0..order_ids.len()).collect();
+    pairs.sort_by(|a, b| a.0.cmp(&b.0));
+    let (first_idx, second_idx) = (pairs[0].1, pairs[1].1);
+    // Proof for first is sibling = leaf(second), and vice-versa
+    let touched = vec![
+        TouchedProof {
+            order_index: 0,
+            order_id: order_ids[0],
+            prev_filled: prev_filled[0],
+            filled_proof: vec![filled_leaves[if first_idx == 0 { second_idx } else { first_idx }]],
+            orders_proof: vec![orders_leaves[if first_idx == 0 { second_idx } else { first_idx }]],
+        },
+        TouchedProof {
+            order_index: 1,
+            order_id: order_ids[1],
+            prev_filled: prev_filled[1],
+            filled_proof: vec![filled_leaves[if second_idx == 1 { first_idx } else { second_idx }]],
+            orders_proof: vec![orders_leaves[if second_idx == 1 { first_idx } else { second_idx }]],
+        },
+    ];
+
+    SettlementInput {
+        domain,
+        orders: vec![buy, sell],
+        matches,
+        initial_balances,
+        proposed_deltas,
+        timestamp: 0,
+        prev_filled_root,
+        prev_filled,
+        orders_root,
+        touched,
+    }
 }
 
 fn filled_root_from_list(orders: &[&Order], amounts: &[u128]) -> [u8; 32] {
@@ -197,6 +239,40 @@ fn filled_root_from_list(orders: &[&Order], amounts: &[u128]) -> [u8; 32] {
         r.copy_from_slice(&Keccak256::digest([]));
         return r;
     }
+    while level.len() > 1 {
+        let mut next: Vec<[u8; 32]> = Vec::with_capacity((level.len() + 1) / 2);
+        let mut i = 0;
+        while i < level.len() {
+            if i + 1 < level.len() {
+                let a = level[i];
+                let b = level[i + 1];
+                let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+                let mut h = Keccak256::new();
+                h.update(lo);
+                h.update(hi);
+                let out = h.finalize();
+                let mut parent = [0u8; 32];
+                parent.copy_from_slice(&out);
+                next.push(parent);
+                i += 2;
+            } else {
+                next.push(level[i]);
+                i += 1;
+            }
+        }
+        level = next;
+    }
+    level[0]
+}
+
+fn orders_root_from_list(order_ids: &[[u8; 32]]) -> [u8; 32] {
+    if order_ids.is_empty() { return Keccak256::digest([]).into(); }
+    let mut leaves: Vec<[u8; 32]> = order_ids.iter().map(|oid| hash_order_leaf(*oid)).collect();
+    // sort by order_id ascending to match root builder
+    let mut pairs: Vec<([u8; 32], [u8; 32])> = order_ids.iter().copied().zip(leaves.iter().copied()).collect();
+    pairs.sort_by(|a, b| a.0.cmp(&b.0));
+    leaves = pairs.into_iter().map(|(_, leaf)| leaf).collect();
+    let mut level = leaves;
     while level.len() > 1 {
         let mut next: Vec<[u8; 32]> = Vec::with_capacity((level.len() + 1) / 2);
         let mut i = 0;
@@ -412,4 +488,24 @@ fn pubkey_y(sk: &SigningKey) -> [u8; 32] {
     let mut out = [0u8; 32];
     out.copy_from_slice(&bytes[33..]);
     out
+}
+fn hash_order_leaf(order_id: [u8; 32]) -> [u8; 32] {
+    let mut h = Keccak256::new();
+    h.update(order_id);
+    let out = h.finalize();
+    let mut a = [0u8; 32];
+    a.copy_from_slice(&out);
+    a
+}
+
+fn hash_filled_leaf(order_id: [u8; 32], cumulative_filled: u128) -> [u8; 32] {
+    let mut buf = [0u8; 48];
+    buf[..32].copy_from_slice(&order_id);
+    buf[32..].copy_from_slice(&cumulative_filled.to_be_bytes());
+    let mut h = Keccak256::new();
+    h.update(&buf);
+    let out = h.finalize();
+    let mut a = [0u8; 32];
+    a.copy_from_slice(&out);
+    a
 }
