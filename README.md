@@ -56,6 +56,34 @@ cargo run --release --bin proof -- \
   --asset 0xYourAssetBytes32 \
   --pretty
 ```
+
+### Cancellations Builder
+
+Build a `cancellationsRoot` over order IDs, where value=1 means canceled and 0 means active. The settlement proof requires a 0‑value proof for each touched order and binds to the `cancellationsRoot` provided on‑chain.
+
+- From a JSON file of `{ orderId, canceled }` entries:
+  ```sh
+  cd script
+  cargo run --release --bin cancellations -- --file cancellations_input.json --pretty --out cancellations.json
+  ```
+
+- Built‑in sample (two orders): cancel the first by index:
+  ```sh
+  cd script
+  cargo run --release --bin cancellations -- --sample --cancel-index 0 --pretty
+  ```
+
+### Generate Cancellations Template From Settlement Input
+
+Create a `cancellations_input.json` from a SettlementInput JSON by extracting order IDs (defaults all to `canceled: false`). Edit the flags you want to cancel, then build the root with the cancellations builder above.
+
+```sh
+cd script
+# From your own SettlementInput JSON
+cargo run --release --bin orderids -- --file path/to/settlement_input.json --pretty --out cancellations_input.json
+# Or from the built-in sample
+cargo run --release --bin orderids -- --sample --pretty --out cancellations_input.json
+```
 # End-to-End Workflow (Simple Guide)
 
 ## Concepts
@@ -88,6 +116,7 @@ cargo run --release --bin proof -- \
 4) Update the on-chain roots (batch proof)
 - Call your Solidity `updateRoot(proof, publicValues)` (see `contracts/Ledger.sol`).
 - The contract verifies the proof and requires `prevFilledRoot` in `publicValues` to equal the stored `filledRoot`, then updates both `balancesRoot` and `filledRoot` to the new values.
+- The SP1 proof also commits `cancellationsRoot` and binds to the on‑chain view; batches cannot ignore newly canceled orders.
 - This uses the SP1 proof from step 1, not the Merkle proof.
 
 5) Withdraw (membership proof)
@@ -100,6 +129,7 @@ cargo run --release --bin proof -- \
 - Merkle proof = per user (withdraws against the current `balancesRoot`).
 - cumulative_owed model: contract tracks `spent[owner][asset]`; withdraw allowed iff `spent + amountToWithdraw <= cumulativeOwed`.
 - Roots must match: `leaves.json.root` must equal the `balancesRoot` printed by `defi` (or your custom batch prover) for that batch.
+- cancellationsRoot: parallel tree over orderIds with 0/1 values; settlement verifies touched orders are not canceled (0) and binds to the on‑chain `cancellationsRoot`.
 
 
 ## Using the Prover Network

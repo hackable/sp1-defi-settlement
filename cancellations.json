@@ -1,0 +1,13 @@
+{
+  "root": "0xf63d075df570b8ade159b563a3120f51d390c74814b80e67db292c40640e4af6",
+  "leaves": [
+    {
+      "orderId": "0x771a16742c006a6f182e93f94cbcdeb0779edca8f2f74255bb9dab1b4a850382",
+      "canceled": true
+    },
+    {
+      "orderId": "0x478f64ae90d9b84a7f7943ff0c5f2961fbaaa6f921b49ac4b03b033a9efc460e",
+      "canceled": false
+    }
+  ]
+}

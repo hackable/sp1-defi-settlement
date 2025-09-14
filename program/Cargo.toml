@@ -8,3 +8,5 @@ sp1-zkvm = "5.0.8"
 serde = { version = "1.0", features = ["derive"] }
 alloy-sol-types = { workspace = true }
 defi-lib = { path = "../lib" }
+
+# Route hot paths to SP1 precompiles when compiling the guest.

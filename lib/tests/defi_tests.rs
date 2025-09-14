@@ -1,6 +1,7 @@
 use defi_lib::defi::{verify_settlement, Balance, Delta, Domain, MatchFill, Order, SettlementInput, Side};
 use k256::ecdsa::{signature::DigestSigner, Signature, SigningKey, VerifyingKey};
 use sha3::{Digest, Keccak256};
+use defi_lib::merkle::{hash_order_leaf, hash_filled_leaf};
 
 type Address = [u8; 20];
 type Asset = [u8; 32];
@@ -87,24 +88,7 @@ fn order_struct_hash(order: &Order) -> [u8; 32] {
     sh
 }
 
-fn filled_leaf(order_hash: [u8; 32], amount: u128) -> [u8; 32] {
-    let mut h = Keccak256::new();
-    h.update(order_hash);
-    h.update(&amount.to_be_bytes());
-    let out = h.finalize();
-    let mut leaf = [0u8; 32];
-    leaf.copy_from_slice(&out);
-    leaf
-}
-
-fn hash_order_leaf(order_id: [u8; 32]) -> [u8; 32] {
-    let mut h = Keccak256::new();
-    h.update(order_id);
-    let out = h.finalize();
-    let mut a = [0u8; 32];
-    a.copy_from_slice(&out);
-    a
-}
+fn filled_leaf(order_hash: [u8; 32], amount: u128) -> [u8; 32] { hash_filled_leaf(order_hash, amount) }
 
 fn sign_order(order: &Order, domain: &Domain, sk: &SigningKey) -> (u8, [u8; 32], [u8; 32]) {
     let domain_sep = eip712_domain_separator(domain);
@@ -234,16 +218,18 @@ fn build_sample_input() -> SettlementInput {
     entries.sort_by(|a, b| a.0.cmp(&b.0));
     let prev_filled_root = merkle_root_sorted(entries.iter().map(|(_, l)| *l).collect());
     let orders_root = merkle_root_sorted(vec![hash_order_leaf(buy_hash), hash_order_leaf(sell_hash)]);
+    // cancellations_root: both orders not canceled (value=0), same encoding as filled leaf with value 0
+    let cancellations_root = merkle_root_sorted(vec![filled_leaf(buy_hash, 0), filled_leaf(sell_hash, 0)]);
     // Proofs: sibling leaf
     let filled_proof_buy = vec![filled_leaf(sell_hash, 0)];
     let filled_proof_sell = vec![filled_leaf(buy_hash, 0)];
     let orders_proof_buy = vec![hash_order_leaf(sell_hash)];
     let orders_proof_sell = vec![hash_order_leaf(buy_hash)];
     let touched = vec![
-        defi_lib::defi::TouchedProof { order_index: 0, order_id: buy_hash, prev_filled: 0, filled_proof: filled_proof_buy, orders_proof: orders_proof_buy },
-        defi_lib::defi::TouchedProof { order_index: 1, order_id: sell_hash, prev_filled: 0, filled_proof: filled_proof_sell, orders_proof: orders_proof_sell },
+        defi_lib::defi::TouchedProof { order_index: 0, order_id: buy_hash, prev_filled: 0, filled_proof: filled_proof_buy.clone(), orders_proof: orders_proof_buy.clone(), cancel_proof: filled_proof_buy },
+        defi_lib::defi::TouchedProof { order_index: 1, order_id: sell_hash, prev_filled: 0, filled_proof: filled_proof_sell.clone(), orders_proof: orders_proof_sell.clone(), cancel_proof: filled_proof_sell },
     ];
-    SettlementInput { domain, orders: vec![buy, sell], matches, initial_balances, proposed_deltas, timestamp: 0, prev_filled_root, prev_filled, orders_root, touched }
+    SettlementInput { domain, orders: vec![buy, sell], matches, initial_balances, proposed_deltas, timestamp: 0, prev_filled_root, prev_filled, cancellations_root, orders_root, touched }
 }
 
 #[test]
@@ -348,4 +334,23 @@ fn test_cross_batch_overfill_rejected() {
     input.matches[0].base_filled = 5;
     let err = verify_settlement(&input).unwrap_err();
     assert!(err.contains("prev_filled") || err.contains("overfills") || err.contains("exceeds"));
+}
+
+#[test]
+fn test_canceled_order_rejected() {
+    // Build the standard sample, then mark the buy order as canceled in cancellations_root.
+    let mut input = build_sample_input();
+    let buy_hash = order_struct_hash(&input.orders[0]);
+    let sell_hash = order_struct_hash(&input.orders[1]);
+    // cancellations_root: buy canceled (1), sell not canceled (0)
+    let leaves = vec![
+        filled_leaf(buy_hash, 1),
+        filled_leaf(sell_hash, 0),
+    ];
+    let new_cancellations_root = merkle_root_sorted(leaves);
+    input.cancellations_root = new_cancellations_root;
+    // Keep existing cancel_proof values from build_sample_input() which prove value=0 for both orders.
+    // Now that the root encodes buy as canceled (1), the guest should reject due to cancel proof failure.
+    let err = verify_settlement(&input).unwrap_err();
+    assert!(err.contains("cancellationsRoot") || err.contains("cancel") || err.contains("proof"));
 }

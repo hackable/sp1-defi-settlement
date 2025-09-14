@@ -6,6 +6,7 @@ use defi_lib::defi::{Balance, Delta, Domain, MatchFill, Order, SettlementInput, 
 use defi_lib::SettlementPublicValues;
 use k256::ecdsa::{signature::DigestSigner, Signature, SigningKey, VerifyingKey};
 use sha3::{Digest, Keccak256};
+use defi_lib::merkle::{hash_order_leaf, hash_filled_leaf};
 use sp1_sdk::{include_elf, ProverClient, SP1Stdin};
 use std::path::PathBuf;
 
@@ -77,6 +78,7 @@ fn main() {
         println!("balancesRoot: 0x{}", hex::encode(pv.balancesRoot));
         println!("prevFilledRoot: 0x{}", hex::encode(pv.prevFilledRoot));
         println!("filledRoot: 0x{}", hex::encode(pv.filledRoot));
+        println!("cancellationsRoot: 0x{}", hex::encode(pv.cancellationsRoot));
     } else {
         let (pk, vk) = client.setup(DEFI_ELF);
         let proof = client.prove(&pk, &stdin).run().expect("failed to generate proof");
@@ -88,6 +90,7 @@ fn main() {
         println!("balancesRoot: 0x{}", hex::encode(pv.balancesRoot));
         println!("prevFilledRoot: 0x{}", hex::encode(pv.prevFilledRoot));
         println!("filledRoot: 0x{}", hex::encode(pv.filledRoot));
+        println!("cancellationsRoot: 0x{}", hex::encode(pv.cancellationsRoot));
     }
 }
 
@@ -175,6 +178,8 @@ fn build_sample_input() -> SettlementInput {
     let order_ids = vec![order_struct_hash(&buy), order_struct_hash(&sell)];
     let prev_filled_root = filled_root_from_list(&[&buy, &sell], &prev_filled);
     let orders_root = orders_root_from_list(&order_ids);
+    // cancellations_root: both orders not canceled (value=0), same encoding as filled leaf with value 0
+    let cancellations_root = filled_root_from_list(&[&buy, &sell], &[0u128, 0u128]);
 
     // Build simple proofs for 2-leaf trees (sibling is the other leaf) for both orders.
     let orders_leaves: Vec<[u8; 32]> = order_ids.iter().map(|oid| hash_order_leaf(*oid)).collect();
@@ -195,6 +200,7 @@ fn build_sample_input() -> SettlementInput {
             prev_filled: prev_filled[0],
             filled_proof: vec![filled_leaves[if first_idx == 0 { second_idx } else { first_idx }]],
             orders_proof: vec![orders_leaves[if first_idx == 0 { second_idx } else { first_idx }]],
+            cancel_proof: vec![filled_leaves[if first_idx == 0 { second_idx } else { first_idx }]],
         },
         TouchedProof {
             order_index: 1,
@@ -202,6 +208,7 @@ fn build_sample_input() -> SettlementInput {
             prev_filled: prev_filled[1],
             filled_proof: vec![filled_leaves[if second_idx == 1 { first_idx } else { second_idx }]],
             orders_proof: vec![orders_leaves[if second_idx == 1 { first_idx } else { second_idx }]],
+            cancel_proof: vec![filled_leaves[if second_idx == 1 { first_idx } else { second_idx }]],
         },
     ];
 
@@ -214,89 +221,30 @@ fn build_sample_input() -> SettlementInput {
         timestamp: 0,
         prev_filled_root,
         prev_filled,
+        cancellations_root,
         orders_root,
         touched,
     }
 }
 
 fn filled_root_from_list(orders: &[&Order], amounts: &[u128]) -> [u8; 32] {
-    // Build leaves = keccak(order_struct_hash || amount_be16) sorted by order hash
-    let mut entries: Vec<([u8; 32], [u8; 32])> = Vec::with_capacity(orders.len());
-    for (i, o) in orders.iter().enumerate() {
-        let oid = order_struct_hash(o);
-        let mut h = Keccak256::new();
-        h.update(oid);
-        h.update(&amounts[i].to_be_bytes());
-        let out = h.finalize();
-        let mut leaf = [0u8; 32];
-        leaf.copy_from_slice(&out);
-        entries.push((oid, leaf));
-    }
-    entries.sort_by(|a, b| a.0.cmp(&b.0));
-    let mut level: Vec<[u8; 32]> = entries.into_iter().map(|(_, leaf)| leaf).collect();
-    if level.is_empty() {
-        let mut r = [0u8; 32];
-        r.copy_from_slice(&Keccak256::digest([]));
-        return r;
-    }
-    while level.len() > 1 {
-        let mut next: Vec<[u8; 32]> = Vec::with_capacity((level.len() + 1) / 2);
-        let mut i = 0;
-        while i < level.len() {
-            if i + 1 < level.len() {
-                let a = level[i];
-                let b = level[i + 1];
-                let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
-                let mut h = Keccak256::new();
-                h.update(lo);
-                h.update(hi);
-                let out = h.finalize();
-                let mut parent = [0u8; 32];
-                parent.copy_from_slice(&out);
-                next.push(parent);
-                i += 2;
-            } else {
-                next.push(level[i]);
-                i += 1;
-            }
-        }
-        level = next;
-    }
-    level[0]
+    let entries: Vec<([u8; 32], [u8; 32])> = orders
+        .iter()
+        .enumerate()
+        .map(|(i, o)| {
+            let oid = order_struct_hash(o);
+            (oid, hash_filled_leaf(oid, amounts[i]))
+        })
+        .collect();
+    defi_lib::merkle::merkle_root_from_unordered_kv(entries)
 }
 
 fn orders_root_from_list(order_ids: &[[u8; 32]]) -> [u8; 32] {
-    if order_ids.is_empty() { return Keccak256::digest([]).into(); }
-    let mut leaves: Vec<[u8; 32]> = order_ids.iter().map(|oid| hash_order_leaf(*oid)).collect();
-    // sort by order_id ascending to match root builder
-    let mut pairs: Vec<([u8; 32], [u8; 32])> = order_ids.iter().copied().zip(leaves.iter().copied()).collect();
-    pairs.sort_by(|a, b| a.0.cmp(&b.0));
-    leaves = pairs.into_iter().map(|(_, leaf)| leaf).collect();
-    let mut level = leaves;
-    while level.len() > 1 {
-        let mut next: Vec<[u8; 32]> = Vec::with_capacity((level.len() + 1) / 2);
-        let mut i = 0;
-        while i < level.len() {
-            if i + 1 < level.len() {
-                let a = level[i];
-                let b = level[i + 1];
-                let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
-                let mut h = Keccak256::new();
-                h.update(lo);
-                h.update(hi);
-                let out = h.finalize();
-                let mut parent = [0u8; 32];
-                parent.copy_from_slice(&out);
-                next.push(parent);
-                i += 2;
-            } else {
-                next.push(level[i]);
-                i += 1;
-            }
-        }
-        level = next;
-    }
-    level[0]
+    let entries: Vec<([u8; 32], [u8; 32])> = order_ids
+        .iter()
+        .map(|oid| (*oid, hash_order_leaf(*oid)))
+        .collect();
+    defi_lib::merkle::merkle_root_from_unordered_kv(entries)
 }
 
 // ----------------- Export sample input as documented JSON -----------------
@@ -488,24 +436,4 @@ fn pubkey_y(sk: &SigningKey) -> [u8; 32] {
     let mut out = [0u8; 32];
     out.copy_from_slice(&bytes[33..]);
     out
-}
-fn hash_order_leaf(order_id: [u8; 32]) -> [u8; 32] {
-    let mut h = Keccak256::new();
-    h.update(order_id);
-    let out = h.finalize();
-    let mut a = [0u8; 32];
-    a.copy_from_slice(&out);
-    a
-}
-
-fn hash_filled_leaf(order_id: [u8; 32], cumulative_filled: u128) -> [u8; 32] {
-    let mut buf = [0u8; 48];
-    buf[..32].copy_from_slice(&order_id);
-    buf[32..].copy_from_slice(&cumulative_filled.to_be_bytes());
-    let mut h = Keccak256::new();
-    h.update(&buf);
-    let out = h.finalize();
-    let mut a = [0u8; 32];
-    a.copy_from_slice(&out);
-    a
 }
