@@ -63,7 +63,7 @@ fn main() -> Result<()> {
         let input = defi_lib::samples::build_sample_input().map_err(|e| anyhow::anyhow!(e))?;
         input.orders.iter().map(|o| order_struct_hash(o)).collect()
     } else {
-        let file = args.file.as_ref().unwrap();
+        let file = args.file.as_ref().expect("file argument should be provided when not using sample");
         let data = std::fs::read_to_string(file).with_context(|| format!("reading {}", file))?;
         // InputJson works even if cancellationsUpdates/ordersTouched are present; we only need orders
         let json: JsonInput = serde_json::from_str(&data).context("parsing JSON input")?;

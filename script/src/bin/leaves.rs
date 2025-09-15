@@ -144,7 +144,7 @@ fn main() -> Result<()> {
     let native_in = if args.sample {
         defi_lib::samples::build_sample_input().map_err(|e| anyhow::anyhow!(e))?
     } else {
-        let file = args.file.as_ref().unwrap();
+        let file = args.file.as_ref().expect("file argument should be provided when not using sample");
         let data = std::fs::read_to_string(file).with_context(|| format!("reading {}", file))?;
         let json_in: JsonInput = serde_json::from_str(&data).context("parsing JSON input")?;
         input_to_native(json_in)?

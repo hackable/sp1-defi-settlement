@@ -73,7 +73,7 @@ fn main() -> Result<()> {
 
     if args.execute {
         let (output, _report) = client.execute(DEFI_ELF, &stdin).run().context("execute run failed")?;
-        let pv = SettlementPublicValues::abi_decode(output.as_slice()).unwrap();
+        let pv = SettlementPublicValues::abi_decode(output.as_slice()).expect("output should decode to SettlementPublicValues");
         println!("matchCount: {}", pv.matchCount);
         println!("balancesRoot: 0x{}", hex::encode(pv.balancesRoot));
         println!("prevFilledRoot: 0x{}", hex::encode(pv.prevFilledRoot));
@@ -86,7 +86,7 @@ fn main() -> Result<()> {
         println!("Successfully generated proof!");
         client.verify(&proof, &vk).context("failed to verify proof")?;
         println!("Successfully verified proof!");
-        let pv = SettlementPublicValues::abi_decode(proof.public_values.as_slice()).unwrap();
+        let pv = SettlementPublicValues::abi_decode(proof.public_values.as_slice()).expect("proof public values should decode to SettlementPublicValues");
         println!("matchCount: {}", pv.matchCount);
         println!("balancesRoot: 0x{}", hex::encode(pv.balancesRoot));
         println!("prevFilledRoot: 0x{}", hex::encode(pv.prevFilledRoot));

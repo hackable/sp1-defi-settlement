@@ -397,7 +397,7 @@ pub mod defi {
             if v < 0 {
                 return Err("negative final balance".to_string());
             }
-            final_entries.push((k.0, k.1, u128::try_from(v).unwrap()));
+            final_entries.push((k.0, k.1, u128::try_from(v).expect("final balance should fit in u128")));
         }
 
         // BTreeMap iteration already yields (owner, asset) in sorted order; no extra sort needed.
@@ -688,7 +688,7 @@ pub mod defi {
                     old_nodes.push(cur);
                 }
                 // Sanity: path reaches prev_filled_root
-                if *old_nodes.last().unwrap() != input.prev_filled_root {
+                if *old_nodes.last().expect("old_nodes should not be empty") != input.prev_filled_root {
                     return Err("filled proof does not lead to prevFilledRoot".to_string());
                 }
 
@@ -819,7 +819,7 @@ pub mod defi {
                 cur = fold_sorted_pair(cur, *sib);
                 old_nodes.push(cur);
             }
-            if *old_nodes.last().unwrap() != input.cancellations_root {
+            if *old_nodes.last().expect("old_nodes should not be empty") != input.cancellations_root {
                 return Err("cancellation proof does not lead to cancellationsRoot".to_string());
             }
             let new_leaf = crate::merkle::hash_filled_leaf(u.order_id, u.new_value);
@@ -1026,13 +1026,13 @@ pub mod defi {
             hasher0.update(&[0x19, 0x01]);
             hasher0.update(&domain_sep);
             hasher0.update(&struct_hash);
-            let rec0 = VerifyingKey::recover_from_digest(hasher0, &sig, RecoveryId::from_byte(0).unwrap());
+            let rec0 = VerifyingKey::recover_from_digest(hasher0, &sig, RecoveryId::from_byte(0).expect("0 is valid recovery id"));
 
             let mut hasher1 = Keccak256::new();
             hasher1.update(&[0x19, 0x01]);
             hasher1.update(&domain_sep);
             hasher1.update(&struct_hash);
-            let rec1 = VerifyingKey::recover_from_digest(hasher1, &sig, RecoveryId::from_byte(1).unwrap());
+            let rec1 = VerifyingKey::recover_from_digest(hasher1, &sig, RecoveryId::from_byte(1).expect("1 is valid recovery id"));
 
             match (rec0.ok(), rec1.ok()) {
                 (Some(vk), _) if vk == vk_expected => 27,

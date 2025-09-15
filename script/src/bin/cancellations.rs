@@ -46,8 +46,8 @@ fn main() -> Result<()> {
 
 
         let _domain = Domain { chain_id: 1, exchange: [0x11; 20] };
-        let buy_sk = SigningKey::from_bytes((&[1u8; 32]).into()).unwrap();
-        let sell_sk = SigningKey::from_bytes((&[2u8; 32]).into()).unwrap();
+        let buy_sk = SigningKey::from_bytes((&[1u8; 32]).into()).expect("hardcoded key bytes should be valid");
+        let sell_sk = SigningKey::from_bytes((&[2u8; 32]).into()).expect("hardcoded key bytes should be valid");
         let buyer = addr_from_signer(&buy_sk);
         let seller = addr_from_signer(&sell_sk);
         let base = [0xAA; 32];
@@ -61,7 +61,7 @@ fn main() -> Result<()> {
         }
         (order_ids, canceled_flags)
     } else {
-        let file = args.file.as_ref().unwrap();
+        let file = args.file.as_ref().expect("file argument should be provided when not using sample");
         let data = std::fs::read_to_string(file).with_context(|| format!("reading {}", file))?;
         let items: Vec<JsonCancelItem> = serde_json::from_str(&data).context("parsing JSON input")?;
         let mut order_ids = Vec::with_capacity(items.len());
