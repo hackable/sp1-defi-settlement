@@ -1,10 +1,24 @@
 use alloy_sol_types::sol;
-use k256::ecdsa::signature::DigestVerifier;
 use k256::ecdsa::{Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use sha3::{Digest, Keccak256};
 
 pub mod merkle;
+pub mod util;
+pub mod io;
+pub mod samples;
+
+// Re-exports for convenience in scripts/tests
+pub use merkle::{
+    hash_balances_leaf, hash_filled_leaf, hash_order_leaf, merkle_root_from_unordered_kv,
+    verify_merkle_proof_sorted_keccak,
+};
+
+pub use defi::{
+    eip712_domain_separator, order_struct_hash, sign_order, addr_from_signer,
+};
+
+pub use util::{parse_hex, to_u128, to_u64, to_i128, to_side};
 
 sol! {
     /// Public values for the DeFi settlement program.
@@ -50,9 +64,6 @@ pub mod defi {
         pub amount: u128,  // max base amount (Sell) or max base to acquire (Buy)
         pub nonce: u64,
         pub expiry: u64,
-        /// Uncompressed secp256k1 public key coordinates.
-        pub pubkey_x: [u8; 32],
-        pub pubkey_y: [u8; 32],
         // Ethereum-style signature components
         pub v: u8,
         pub r: [u8; 32],
@@ -121,6 +132,10 @@ pub mod defi {
     }
 
     pub fn verify_settlement(input: &SettlementInput) -> Result<SettlementOutput, String> {
+        const MAX_TOUCHED_ORDERS: usize = 1_000;
+        if input.touched.len() > MAX_TOUCHED_ORDERS {
+            return Err("exceeded maximum touched orders limit".to_string());
+        }
         // Verify per-order proofs for all touched orders and ensure coverage of matched indices.
         // Build map: index -> proof
         let mut touched_map = BTreeMap::new();
@@ -165,10 +180,19 @@ pub mod defi {
             }
         }
 
-        // Perform full validation using snapshot balances logic (non-negativity, limits, deltas).
-        let _final_entries = compute_final_entries(input)?;
+        // Verify signatures only for touched orders to avoid O(N) signature checks.
+        for (idx, _tp) in touched_map.iter() {
+            let o = &input.orders[*idx];
+            if !verify_order_sig(o, &input.domain) {
+                return Err(format!("invalid signature for touched order {}", idx));
+            }
+        }
+
+        // Perform full validation using snapshot balances logic (non-negativity, limits, deltas),
+        // skipping redundant signature verification (already checked for touched orders).
+        let _final_entries = compute_final_entries_impl(input, false)?;
         // Commit cumulative_owed root (monotonic credits per (owner, asset)).
-        let cum_entries = compute_cumulative_entries(input)?;
+        let cum_entries = compute_cumulative_entries_impl(input, false)?;
         let balances_root = balances_merkle_root(&cum_entries);
 
         // Compute new filled_root via sparse updates using touched proofs.
@@ -184,9 +208,39 @@ pub mod defi {
         })
     }
 
+    /// Compute orders root from list of order ids
+    pub fn orders_root_from_list(order_ids: &[[u8; 32]]) -> [u8; 32] {
+        let entries: Vec<([u8; 32], [u8; 32])> = order_ids
+            .iter()
+            .map(|oid| (*oid, crate::merkle::hash_order_leaf(*oid)))
+            .collect();
+        crate::merkle::merkle_root_from_unordered_kv(entries)
+    }
+
+    /// Compute filled root from list of orders and corresponding amounts
+    pub fn filled_root_from_orders(orders: &[&Order], amounts: &[u128]) -> [u8; 32] {
+        let entries: Vec<([u8; 32], [u8; 32])> = orders
+            .iter()
+            .enumerate()
+            .map(|(i, o)| {
+                let oid = order_struct_hash(o);
+                (oid, crate::merkle::hash_filled_leaf(oid, amounts[i]))
+            })
+            .collect();
+        crate::merkle::merkle_root_from_unordered_kv(entries)
+    }
+
     /// Compute the sorted final (owner, asset, amount) entries after full validation.
     pub fn compute_final_entries(
         input: &SettlementInput,
+    ) -> Result<Vec<(Address, Asset, u128)>, String> {
+        compute_final_entries_impl(input, true)
+    }
+
+    /// Internal implementation with optional signature verification.
+    fn compute_final_entries_impl(
+        input: &SettlementInput,
+        verify_sigs: bool,
     ) -> Result<Vec<(Address, Asset, u128)>, String> {
         // 1) Basic checks.
         for (i, o) in input.orders.iter().enumerate() {
@@ -199,9 +253,11 @@ pub mod defi {
         }
 
         // 2) Verify signatures for all orders.
-        for (i, o) in input.orders.iter().enumerate() {
-            if !verify_order_sig(o, &input.domain) {
-                return Err(format!("invalid signature for order {}", i));
+        if verify_sigs {
+            for (i, o) in input.orders.iter().enumerate() {
+                if !verify_order_sig(o, &input.domain) {
+                    return Err(format!("invalid signature for order {}", i));
+                }
             }
         }
 
@@ -255,12 +311,26 @@ pub mod defi {
 
             // buyer_limit >= eff => buy.price_n/buy.price_d >= ef_q/ef_b
             // => buy.price_n * ef_b >= ef_q * buy.price_d
-            if buy.price_n.saturating_mul(ef_b) < ef_q.saturating_mul(buy.price_d) {
+            let lhs_buy = buy
+                .price_n
+                .checked_mul(ef_b)
+                .ok_or_else(|| format!("price multiplication overflow (buy match {})", j))?;
+            let rhs_buy = ef_q
+                .checked_mul(buy.price_d)
+                .ok_or_else(|| format!("price multiplication overflow (buy match {})", j))?;
+            if lhs_buy < rhs_buy {
                 return Err(format!("match {} violates buyer price limit", j));
             }
 
             // seller_limit <= eff => sell.price_n/sell.price_d <= ef_q/ef_b
-            if sell.price_n.saturating_mul(ef_b) > ef_q.saturating_mul(sell.price_d) {
+            let lhs_sell = sell
+                .price_n
+                .checked_mul(ef_b)
+                .ok_or_else(|| format!("price multiplication overflow (sell match {})", j))?;
+            let rhs_sell = ef_q
+                .checked_mul(sell.price_d)
+                .ok_or_else(|| format!("price multiplication overflow (sell match {})", j))?;
+            if lhs_sell > rhs_sell {
                 return Err(format!("match {} violates seller price limit", j));
             }
 
@@ -270,28 +340,16 @@ pub mod defi {
 
             // Compute deltas.
             // Buyer: +base, -quote
-            acc_delta(
-                &mut computed,
-                (buy.maker, buy.base),
-                i128::try_from(m.base_filled).unwrap(),
-            );
-            acc_delta(
-                &mut computed,
-                (buy.maker, buy.quote),
-                -i128::try_from(m.quote_paid).unwrap(),
-            );
+            let bf_i128 = i128::try_from(m.base_filled)
+                .map_err(|_| "base_filled exceeds i128 range".to_string())?;
+            let qp_i128 = i128::try_from(m.quote_paid)
+                .map_err(|_| "quote_paid exceeds i128 range".to_string())?;
+            acc_delta(&mut computed, (buy.maker, buy.base), bf_i128);
+            acc_delta(&mut computed, (buy.maker, buy.quote), -qp_i128);
 
             // Seller: -base, +quote
-            acc_delta(
-                &mut computed,
-                (sell.maker, sell.base),
-                -i128::try_from(m.base_filled).unwrap(),
-            );
-            acc_delta(
-                &mut computed,
-                (sell.maker, sell.quote),
-                i128::try_from(m.quote_paid).unwrap(),
-            );
+            acc_delta(&mut computed, (sell.maker, sell.base), -bf_i128);
+            acc_delta(&mut computed, (sell.maker, sell.quote), qp_i128);
         }
 
         // 5) Validate proposed deltas exactly match computed deltas.
@@ -312,7 +370,8 @@ pub mod defi {
         // 6) Apply deltas to initial balances and ensure non-negative.
         let mut balances: BTreeMap<(Address, Asset), i128> = BTreeMap::new();
         for b in &input.initial_balances {
-            acc_delta(&mut balances, (b.owner, b.asset), i128::try_from(b.amount).unwrap());
+            let amt_i128 = i128::try_from(b.amount).map_err(|_| "initial balance exceeds i128 range".to_string())?;
+            acc_delta(&mut balances, (b.owner, b.asset), amt_i128);
         }
         for (k, d) in computed.iter() {
             acc_delta(&mut balances, *k, *d);
@@ -336,6 +395,14 @@ pub mod defi {
     pub fn compute_cumulative_entries(
         input: &SettlementInput,
     ) -> Result<Vec<(Address, Asset, u128)>, String> {
+        compute_cumulative_entries_impl(input, true)
+    }
+
+    /// Internal implementation with optional signature verification.
+    fn compute_cumulative_entries_impl(
+        input: &SettlementInput,
+        verify_sigs: bool,
+    ) -> Result<Vec<(Address, Asset, u128)>, String> {
         // Reuse the same validation structure to compute deltas and validate matches.
         for (i, o) in input.orders.iter().enumerate() {
             if o.price_d == 0 {
@@ -345,9 +412,11 @@ pub mod defi {
                 return Err(format!("order {} expired", i));
             }
         }
-        for (i, o) in input.orders.iter().enumerate() {
-            if !verify_order_sig(o, &input.domain) {
-                return Err(format!("invalid signature for order {}", i));
+        if verify_sigs {
+            for (i, o) in input.orders.iter().enumerate() {
+                if !verify_order_sig(o, &input.domain) {
+                    return Err(format!("invalid signature for order {}", i));
+                }
             }
         }
         let mut remaining: Vec<u128> = Vec::with_capacity(input.orders.len());
@@ -382,18 +451,36 @@ pub mod defi {
             }
             let ef_q = m.quote_paid;
             let ef_b = m.base_filled;
-            if buy.price_n.saturating_mul(ef_b) < ef_q.saturating_mul(buy.price_d) {
+            let lhs_buy = buy
+                .price_n
+                .checked_mul(ef_b)
+                .ok_or_else(|| format!("price multiplication overflow (buy match {})", j))?;
+            let rhs_buy = ef_q
+                .checked_mul(buy.price_d)
+                .ok_or_else(|| format!("price multiplication overflow (buy match {})", j))?;
+            if lhs_buy < rhs_buy {
                 return Err(format!("match {} violates buyer price limit", j));
             }
-            if sell.price_n.saturating_mul(ef_b) > ef_q.saturating_mul(sell.price_d) {
+            let lhs_sell = sell
+                .price_n
+                .checked_mul(ef_b)
+                .ok_or_else(|| format!("price multiplication overflow (sell match {})", j))?;
+            let rhs_sell = ef_q
+                .checked_mul(sell.price_d)
+                .ok_or_else(|| format!("price multiplication overflow (sell match {})", j))?;
+            if lhs_sell > rhs_sell {
                 return Err(format!("match {} violates seller price limit", j));
             }
             remaining[bi] -= m.base_filled;
             remaining[si] -= m.base_filled;
-            acc_delta(&mut computed, (buy.maker, buy.base), i128::try_from(m.base_filled).unwrap());
-            acc_delta(&mut computed, (buy.maker, buy.quote), -i128::try_from(m.quote_paid).unwrap());
-            acc_delta(&mut computed, (sell.maker, sell.base), -i128::try_from(m.base_filled).unwrap());
-            acc_delta(&mut computed, (sell.maker, sell.quote), i128::try_from(m.quote_paid).unwrap());
+            let bf_i128 = i128::try_from(m.base_filled)
+                .map_err(|_| "base_filled exceeds i128 range".to_string())?;
+            let qp_i128 = i128::try_from(m.quote_paid)
+                .map_err(|_| "quote_paid exceeds i128 range".to_string())?;
+            acc_delta(&mut computed, (buy.maker, buy.base), bf_i128);
+            acc_delta(&mut computed, (buy.maker, buy.quote), -qp_i128);
+            acc_delta(&mut computed, (sell.maker, sell.base), -bf_i128);
+            acc_delta(&mut computed, (sell.maker, sell.quote), qp_i128);
         }
         // Validate proposed deltas
         let mut proposed: BTreeMap<(Address, Asset), i128> = BTreeMap::new();
@@ -417,8 +504,10 @@ pub mod defi {
         for (k, d) in computed.into_iter() {
             if d > 0 {
                 let cur = cum.get(&k).copied().unwrap_or(0);
-                let add = u128::try_from(d).unwrap();
-                let newv = cur.saturating_add(add);
+                let add = u128::try_from(d).map_err(|_| "cumulative delta exceeds u128 range".to_string())?;
+                let newv = cur
+                    .checked_add(add)
+                    .ok_or_else(|| "cumulative owed overflow".to_string())?;
                 cum.insert(k, newv);
             }
         }
@@ -506,9 +595,13 @@ pub mod defi {
                 return Err("match references out-of-bounds order index".to_string());
             }
             let e_b = this_batch_fill.entry(bi).or_insert(0);
-            *e_b = e_b.saturating_add(m.base_filled);
+            *e_b = e_b
+                .checked_add(m.base_filled)
+                .ok_or_else(|| "batch fill overflow".to_string())?;
             let e_s = this_batch_fill.entry(si).or_insert(0);
-            *e_s = e_s.saturating_add(m.base_filled);
+            *e_s = e_s
+                .checked_add(m.base_filled)
+                .ok_or_else(|| "batch fill overflow".to_string())?;
         }
 
         // Build a map from order index to its touched proof for quick lookup and verify basic bindings.
@@ -520,12 +613,21 @@ pub mod defi {
             }
         }
 
+        // Ghost order protection: every touched order must be matched in this batch.
+        for tp in &input.touched {
+            let idx = tp.order_index as usize;
+            if !this_batch_fill.contains_key(&idx) {
+                return Err("touched order not matched in this batch".to_string());
+            }
+        }
+
         // Verify that every matched order has a touched proof and compute updated leaves.
         // Also precompute old path nodes for each proof for later merging.
         struct PathCache {
             old_nodes: Vec<[u8; 32]>, // level 0 = old leaf, last = root
             proof: Vec<[u8; 32]>,
             new_leaf: [u8; 32],
+            order_id: [u8; 32],
         }
         let mut caches: BTreeMap<usize, PathCache> = BTreeMap::new();
 
@@ -577,58 +679,96 @@ pub mod defi {
                 }
 
                 // Compute new leaf hash with added fill.
-                let new_filled = tp.prev_filled.saturating_add(fill);
+                let new_filled = tp
+                    .prev_filled
+                    .checked_add(fill)
+                    .ok_or_else(|| "fill amount overflow".to_string())?;
                 let new_leaf = hash_filled_leaf(tp.order_id, new_filled);
 
-                caches.insert(idx, PathCache { old_nodes, proof: tp.filled_proof.clone(), new_leaf });
+                caches.insert(idx, PathCache { old_nodes, proof: tp.filled_proof.clone(), new_leaf, order_id: tp.order_id });
             }
         }
 
-        // Merge updated paths bottom-up using old node identities to resolve overlaps.
-        // updated[level][old_node] = new_node
-        let mut updated: Vec<BTreeMap<[u8; 32], [u8; 32]>> = Vec::new();
-        let ensure_level = |lvl: usize, updated: &mut Vec<BTreeMap<[u8; 32], [u8; 32]>>| {
-            while updated.len() <= lvl { updated.push(BTreeMap::new()); }
+        // Validate cache structure (old_nodes must be proof.len() + 1)
+        for (_i, c) in caches.iter() {
+            if c.old_nodes.len() != c.proof.len() + 1 {
+                return Err("inconsistent path cache structure".to_string());
+            }
+        }
+
+        // Deterministic path processing: sort caches by (order_id, index) for stability
+        let mut sorted: Vec<(usize, PathCache)> = caches.into_iter().collect();
+        sorted.sort_by(|a, b| match a.1.order_id.cmp(&b.1.order_id) {
+            std::cmp::Ordering::Equal => a.0.cmp(&b.0),
+            other => other,
+        });
+
+        // Level-by-level merge: level_maps[level][old_node] = new_node
+        let mut level_maps: Vec<BTreeMap<[u8; 32], [u8; 32]>> = Vec::new();
+
+        // Level 0: all leaves
+        while level_maps.len() <= 0 { level_maps.push(BTreeMap::new()); }
+        for (_idx, cache) in sorted.iter() {
+            let old_leaf = cache.old_nodes[0];
+            match level_maps[0].get(&old_leaf) {
+                Some(existing) if existing != &cache.new_leaf => return Err("conflicting leaf updates".to_string()),
+                _ => { level_maps[0].insert(old_leaf, cache.new_leaf); }
+            }
+        }
+
+        // Determine max depth and enforce a reasonable bound
+        let max_depth = sorted.iter().map(|(_, c)| c.proof.len()).max().unwrap_or(0);
+        const MAX_TREE_DEPTH: usize = 50;
+        if max_depth > MAX_TREE_DEPTH { return Err("tree depth exceeds maximum".to_string()); }
+
+        // Build parents level-by-level
+        for lvl in 0..max_depth {
+            while level_maps.len() <= lvl { level_maps.push(BTreeMap::new()); }
+            while level_maps.len() <= lvl + 1 { level_maps.push(BTreeMap::new()); }
+            for (_idx, cache) in sorted.iter() {
+                if lvl < cache.proof.len() {
+                    let child_old = cache.old_nodes[lvl];
+                    let child_new = level_maps[lvl]
+                        .get(&child_old)
+                        .copied()
+                        .ok_or_else(|| "missing child node in level map".to_string())?;
+                    let sib_old = cache.proof[lvl];
+                    let sib_new = level_maps[lvl].get(&sib_old).copied().unwrap_or(sib_old);
+                    let parent_new = fold_sorted_pair(child_new, sib_new);
+                    let parent_old = cache.old_nodes[lvl + 1];
+                    match level_maps[lvl + 1].get(&parent_old) {
+                        Some(existing) if existing != &parent_new => return Err("conflicting parent updates".to_string()),
+                        _ => { level_maps[lvl + 1].insert(parent_old, parent_new); }
+                    }
+                }
+            }
+        }
+
+        // New root at top level (handle empty updates)
+        let h = level_maps.len().saturating_sub(1);
+        let final_root = match level_maps.get(h).and_then(|m| m.get(&input.prev_filled_root)).copied() {
+            Some(root) => root,
+            None => input.prev_filled_root, // No updates applied (no matches) => root unchanged
         };
 
-        for (_idx, cache) in caches.iter() {
-            // Level 0: leaf
-            ensure_level(0, &mut updated);
-            let old_leaf = cache.old_nodes[0];
-            match updated[0].get(&old_leaf) {
-                Some(existing) if existing != &cache.new_leaf => return Err("conflicting leaf updates".to_string()),
-                _ => { updated[0].insert(old_leaf, cache.new_leaf); }
-            }
-
-            // Walk up and record updated nodes, allowing sibling substitutions if the sibling subtree was also updated.
+        // Tree consistency validation: each updated path must recompute to final_root
+        for (_idx, cache) in sorted.iter() {
             let mut cur = cache.new_leaf;
-            for (lvl, sib_old) in cache.proof.iter().enumerate() {
-                ensure_level(lvl, &mut updated);
-                ensure_level(lvl + 1, &mut updated);
-
-                let sib_new = *updated[lvl].get(sib_old).unwrap_or(sib_old);
-                let parent_new = fold_sorted_pair(cur, sib_new);
-                let old_parent = cache.old_nodes[lvl + 1];
-                // Insert or override parent mapping. If the sibling subtree is processed later,
-                // this will be recomputed with both updated children and overwrite.
-                updated[lvl + 1].insert(old_parent, parent_new);
-                cur = parent_new;
+            for (i, sib_old) in cache.proof.iter().copied().enumerate() {
+                let sib_new = level_maps[i].get(&sib_old).copied().unwrap_or(sib_old);
+                cur = fold_sorted_pair(cur, sib_new);
             }
+            if cur != final_root { return Err("path root mismatch after merge".to_string()); }
         }
 
-        // The new root is the updated mapping at the top level for the old root.
-        let h = updated.len().saturating_sub(1);
-        match updated.get(h).and_then(|m| m.get(&input.prev_filled_root)).copied() {
-            Some(root) => Ok(root),
-            None => Ok(input.prev_filled_root), // No updates applied (no matches) => root unchanged
-        }
+        Ok(final_root)
     }
 
     // Removed unused helper that recomputed filled root from full lists.
 
     // Merkle helpers moved to crate::merkle (shared across lib/tests/scripts)
 
-    fn eip712_domain_separator(domain: &Domain) -> [u8; 32] {
+    pub fn eip712_domain_separator(domain: &Domain) -> [u8; 32] {
         // typehash = keccak256("EIP712Domain(uint256 chainId,address verifyingContract)")
         let mut keccak = Keccak256::new();
         keccak.update(b"EIP712Domain(uint256 chainId,address verifyingContract)");
@@ -650,7 +790,7 @@ pub mod defi {
         sep
     }
 
-    fn order_struct_hash(order: &Order) -> [u8; 32] {
+    pub fn order_struct_hash(order: &Order) -> [u8; 32] {
         // typehash = keccak256(
         //   "Order(address maker,bytes32 base,bytes32 quote,uint8 side,uint128 price_n,uint128 price_d,uint128 amount,uint64 nonce,uint64 expiry)"
         // )
@@ -695,27 +835,7 @@ pub mod defi {
     }
 
     fn verify_order_sig(order: &Order, domain: &Domain) -> bool {
-        // Build verifying key from provided uncompressed pubkey (0x04 || x || y)
-        let mut sec1 = [0u8; 65];
-        sec1[0] = 0x04;
-        sec1[1..33].copy_from_slice(&order.pubkey_x);
-        sec1[33..].copy_from_slice(&order.pubkey_y);
-        let vk = match VerifyingKey::from_sec1_bytes(&sec1) {
-            Ok(vk) => vk,
-            Err(_) => return false,
-        };
-
-        // Ensure provided maker address matches pubkey-derived address
-        let mut keccak = Keccak256::new();
-        // hash uncompressed pubkey without the 0x04 prefix
-        let mut pk_bytes = [0u8; 64];
-        pk_bytes[..32].copy_from_slice(&order.pubkey_x);
-        pk_bytes[32..].copy_from_slice(&order.pubkey_y);
-        keccak.update(&pk_bytes);
-        let out = keccak.finalize();
-        if &out[12..] != &order.maker {
-            return false;
-        }
+        use k256::ecdsa::RecoveryId;
 
         // Build EIP-712 digest: keccak256("\x19\x01" || domainSeparator || structHash)
         let domain_sep = eip712_domain_separator(domain);
@@ -725,15 +845,103 @@ pub mod defi {
         hasher.update(&domain_sep);
         hasher.update(&struct_hash);
 
-        // Build signature
-        let mut sig_bytes = [0u8; 64];
-        sig_bytes[..32].copy_from_slice(&order.r);
-        sig_bytes[32..].copy_from_slice(&order.s);
-        let sig = match Signature::from_bytes((&sig_bytes).into()) {
+        // Enforce canonical signature to prevent malleability: v in {27,28}, s <= n/2, r,s != 0
+        // secp256k1 group order: FFFFFFFF FFFFFFFF FFFFFFFF FFFFFFFE BAAEDCE6 AF48A03B BFD25E8C D0364141
+        // half order:          7FFFFFFF FFFFFFFF FFFFFFFF 7FFFFFFF 5D576E73 57A4501D DFE92F46 681B20A0
+        const N_OVER_2: [u8; 32] = [
+            0x7F,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,
+            0xFF,0xFF,0xFF,0xFF,0x7F,0xFF,0xFF,0xFF,
+            0x5D,0x57,0x6E,0x73,0x57,0xA4,0x50,0x1D,
+            0xDF,0xE9,0x2F,0x46,0x68,0x1B,0x20,0xA0,
+        ];
+        if !(order.v == 27 || order.v == 28) { return false; }
+        if order.s == [0u8; 32] || order.r == [0u8; 32] { return false; }
+        if order.s > N_OVER_2 { return false; }
+
+        // Build recoverable signature (r,s,v)
+        let rec_id = match order.v { 27 => 0u8, 28 => 1u8, _ => unreachable!() };
+        let sig = match Signature::from_bytes((&{
+            let mut b = [0u8; 64];
+            b[..32].copy_from_slice(&order.r);
+            b[32..].copy_from_slice(&order.s);
+            b
+        }).into()) {
             Ok(s) => s,
             Err(_) => return false,
         };
+        // Recover verifying key and derive maker address
+        let rid = match RecoveryId::from_byte(rec_id) { Some(r) => r, None => return false };
+        let vk = match VerifyingKey::recover_from_digest(hasher, &sig, rid) {
+            Ok(vk) => vk,
+            Err(_) => return false,
+        };
+        let pub_uncompressed = vk.to_encoded_point(false);
+        let bytes = pub_uncompressed.as_bytes();
+        let mut keccak = Keccak256::new();
+        keccak.update(&bytes[1..]);
+        let out = keccak.finalize();
+        &out[12..] == &order.maker
+    }
 
-        vk.verify_digest(hasher, &sig).is_ok()
+    /// Recoverable signing helper (host-side convenience): sign (r,s) and derive v by recovery.
+    pub fn sign_order(
+        order: &Order,
+        domain: &Domain,
+        sk: &k256::ecdsa::SigningKey,
+    ) -> Result<(u8, [u8; 32], [u8; 32]), String> {
+        use k256::ecdsa::{signature::DigestSigner, Signature, VerifyingKey};
+        use k256::ecdsa::RecoveryId;
+
+        // Build EIP-712 digest
+        let domain_sep = eip712_domain_separator(domain);
+        let struct_hash = order_struct_hash(order);
+        let mut hasher_sign = Keccak256::new();
+        hasher_sign.update(&[0x19, 0x01]);
+        hasher_sign.update(&domain_sep);
+        hasher_sign.update(&struct_hash);
+        let sig: Signature = sk.sign_digest(hasher_sign);
+
+        let bytes = sig.to_bytes();
+        let mut r = [0u8; 32];
+        let mut s = [0u8; 32];
+        r.copy_from_slice(&bytes[..32]);
+        s.copy_from_slice(&bytes[32..]);
+
+        // Determine v by trying both recoveries
+        let vk_expected: VerifyingKey = *sk.verifying_key();
+        let v = {
+            let mut hasher0 = Keccak256::new();
+            hasher0.update(&[0x19, 0x01]);
+            hasher0.update(&domain_sep);
+            hasher0.update(&struct_hash);
+            let rec0 = VerifyingKey::recover_from_digest(hasher0, &sig, RecoveryId::from_byte(0).unwrap());
+
+            let mut hasher1 = Keccak256::new();
+            hasher1.update(&[0x19, 0x01]);
+            hasher1.update(&domain_sep);
+            hasher1.update(&struct_hash);
+            let rec1 = VerifyingKey::recover_from_digest(hasher1, &sig, RecoveryId::from_byte(1).unwrap());
+
+            match (rec0.ok(), rec1.ok()) {
+                (Some(vk), _) if vk == vk_expected => 27,
+                (_, Some(vk)) if vk == vk_expected => 28,
+                _ => return Err("signature recovery failed".to_string()),
+            }
+        };
+
+        Ok((v, r, s))
+    }
+
+    /// Derive Ethereum-style address from a signing key (host convenience)
+    pub fn addr_from_signer(sk: &k256::ecdsa::SigningKey) -> [u8; 20] {
+        let vk = *sk.verifying_key();
+        let pub_uncompressed = vk.to_encoded_point(false);
+        let bytes = pub_uncompressed.as_bytes();
+        let mut keccak = Keccak256::new();
+        keccak.update(&bytes[1..]);
+        let out = keccak.finalize();
+        let mut addr = [0u8; 20];
+        addr.copy_from_slice(&out[12..]);
+        addr
     }
 }

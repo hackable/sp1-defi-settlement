@@ -84,6 +84,22 @@ cargo run --release --bin orderids -- --file path/to/settlement_input.json --pre
 # Or from the built-in sample
 cargo run --release --bin orderids -- --sample --pretty --out cancellations_input.json
 ```
+
+### Input JSON Format (Orders)
+
+Orders no longer include pubkey coordinates; signatures are verified via recovery from `(v, r, s)`.
+
+- order fields (camelCase):
+  - `maker` (0x20-bytes), `base` (0x32-bytes), `quote` (0x32-bytes)
+  - `side` ("Buy" | "Sell"), `price_n`, `price_d`, `amount` (decimal strings)
+  - `nonce`, `expiry` (decimal strings)
+- `v` (27/28), `r` (0x32-bytes), `s` (0x32-bytes)
+
+Signature requirements:
+- `v` must be 27 or 28.
+- `s` must be canonical (low‑s): `s <= secp256k1_n/2`.
+- `r` and `s` must be non‑zero.
+
 # End-to-End Workflow (Simple Guide)
 
 ## Concepts
@@ -151,3 +167,45 @@ For example, to generate a core proof using the prover network for the sample ba
 cd script
 SP1_PROVER=network NETWORK_PRIVATE_KEY=... cargo run --release -- --prove --sample
 ```
+
+## Performance Notes
+
+**Sparse Updates**
+- The guest updates `filledRoot` using sparse leaf updates (O(T log N)) over only the touched orders.
+- This avoids recomputing over the full order set and scales to very large books.
+
+**Precompiles (Patched Crates)**
+- The workspace patches `k256` and `sha3` to SP1‑patched crates so guest builds use SP1 precompiles:
+  - secp256k1 ECDSA verify (via `k256`) for order signature checks.
+  - Keccak hashing (via `sha3`) for Merkle parents/leaves and EIP‑712 hashes.
+- Host/tests keep standard Rust crypto; no code changes required.
+
+**Prover Selection**
+- Choose the prover backend with `SP1_PROVER`:
+  - `cpu` for local proving on CPU.
+  - `cuda` for local proving with GPU acceleration (if available).
+  - `network` to use the Succinct Prover Network (requires `NETWORK_PRIVATE_KEY`).
+  - `mock` for fastest development-only runs (non-cryptographic).
+
+Examples:
+```sh
+# Local CPU
+cd script && SP1_PROVER=cpu cargo run --release -- --prove --sample
+
+# Local GPU
+cd script && SP1_PROVER=cuda cargo run --release -- --prove --sample
+
+# Network (requires setup)
+cd script && SP1_PROVER=network NETWORK_PRIVATE_KEY=... cargo run --release -- --prove --sample
+```
+
+**Troubleshooting**
+- If you see a message about patch sections being ignored, ensure the patches live in the workspace root `Cargo.toml` (already configured in this repo).
+- If SP1 assets fail to download during build, verify network access and retry the `cargo build` for `script`.
+
+## Crypto Consistency
+
+- Unified library: both the host (scripts/tests) and the guest (program) use `k256` for ECDSA and `sha3` for Keccak.
+- Signature scheme: orders carry `(v, r, s)` only. The guest recovers the public key from the EIP‑712 digest and `(v, r, s)`, then derives the `maker` address from the recovered pubkey.
+- Computing `v`: the host computes `r, s` using `k256::ecdsa::SigningKey::sign_digest`, then determines `v` by attempting recovery with `RecoveryId` 0 and 1; whichever matches the signer’s verifying key maps to `v = 27` or `28`.
+- Precompiles: when compiled for the guest, patched crates route Keccak and ECDSA verify to SP1 precompiles for performance; host/tests use the standard Rust implementations.

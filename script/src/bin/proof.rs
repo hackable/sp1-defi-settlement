@@ -3,7 +3,9 @@
 
 use clap::Parser;
 use serde::Deserialize;
-use sha3::{Digest, Keccak256};
+// no direct sha3 usage; hashing handled by shared library
+use defi_lib::merkle::{hash_balances_leaf as leaf_hash, build_merkle_proof_sorted};
+use defi_lib::parse_hex;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Generate Merkle proof for balances root", long_about = None)]
@@ -35,69 +37,7 @@ struct LeafJson {
 type Address = [u8; 20];
 type Asset = [u8; 32];
 
-fn parse_hex<const N: usize>(s: &str) -> Result<[u8; N], String> {
-    let ss = s.strip_prefix("0x").ok_or("missing 0x prefix")?;
-    if ss.len() != N * 2 {
-        return Err(format!("expected {} hex chars, got {}", N * 2, ss.len()));
-    }
-    let mut out = [0u8; N];
-    hex::decode_to_slice(ss, &mut out).map_err(|e| e.to_string())?;
-    Ok(out)
-}
-
-fn leaf_hash(owner: Address, asset: Asset, amount: u128) -> [u8; 32] {
-    let mut h = Keccak256::new();
-    h.update(owner);
-    h.update(asset);
-    h.update(&amount.to_be_bytes());
-    let out = h.finalize();
-    let mut leaf = [0u8; 32];
-    leaf.copy_from_slice(&out);
-    leaf
-}
-
-fn merkle_proof_sorted(leaves: Vec<[u8; 32]>, mut idx: usize) -> (Vec<[u8; 32]>, [u8; 32]) {
-    if leaves.is_empty() {
-        let mut root = [0u8; 32];
-        root.copy_from_slice(&Keccak256::digest([]));
-        return (vec![], root);
-    }
-    let mut proof = Vec::new();
-    let mut level = leaves;
-    while level.len() > 1 {
-        let mut next: Vec<[u8; 32]> = Vec::with_capacity((level.len() + 1) / 2);
-        let mut i = 0usize;
-        while i < level.len() {
-            if i + 1 < level.len() {
-                let a = level[i];
-                let b = level[i + 1];
-                // If our index is in this pair, record sibling.
-                if idx == i {
-                    proof.push(b);
-                } else if idx == i + 1 {
-                    proof.push(a);
-                }
-                let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
-                let mut h = Keccak256::new();
-                h.update(lo);
-                h.update(hi);
-                let out = h.finalize();
-                let mut parent = [0u8; 32];
-                parent.copy_from_slice(&out);
-                next.push(parent);
-                i += 2;
-            } else {
-                // Promote odd without sibling
-                next.push(level[i]);
-                i += 1;
-            }
-        }
-        // Move to next level index
-        idx /= 2;
-        level = next;
-    }
-    (proof, level[0])
-}
+// leaf hashing and proof construction provided by the shared library
 
 fn main() -> Result<(), String> {
     let args = Args::parse();
@@ -140,7 +80,7 @@ fn main() -> Result<(), String> {
     }
     let idx = idx.ok_or("target (owner, asset) not found in leaves")?;
 
-    let (proof, root) = merkle_proof_sorted(leaves, idx);
+    let (proof, root) = build_merkle_proof_sorted(leaves, idx);
     let amount = entries[idx].2;
 
     // Output JSON

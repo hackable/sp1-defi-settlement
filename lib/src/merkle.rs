@@ -69,3 +69,31 @@ pub fn merkle_root_from_unordered_kv(mut entries: Vec<([u8; 32], [u8; 32])>) -> 
     let leaves: Vec<[u8; 32]> = entries.into_iter().map(|(_, l)| l).collect();
     merkle_root_from_leaves(leaves)
 }
+
+/// Build a sorted-pair Keccak Merkle proof for a leaf at `idx` and return (proof, root).
+/// The `leaves` vector contains the leaf hashes in order.
+pub fn build_merkle_proof_sorted(leaves: Vec<[u8; 32]>, idx: usize) -> (Vec<[u8; 32]>, [u8; 32]) {
+    if leaves.is_empty() { return (vec![], keccak(&[])); }
+    let mut proof = Vec::new();
+    let mut level = leaves;
+    let mut idx = idx;
+    while level.len() > 1 {
+        let mut next: Vec<[u8; 32]> = Vec::with_capacity((level.len() + 1) / 2);
+        let mut i = 0usize;
+        while i < level.len() {
+            if i + 1 < level.len() {
+                let a = level[i];
+                let b = level[i + 1];
+                if idx == i { proof.push(b); } else if idx == i + 1 { proof.push(a); }
+                next.push(fold_sorted_pair(a, b));
+                i += 2;
+            } else {
+                next.push(level[i]);
+                i += 1;
+            }
+        }
+        idx /= 2;
+        level = next;
+    }
+    (proof, level[0])
+}

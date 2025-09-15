@@ -8,3 +8,6 @@ alloy-sol-types = { workspace = true }
 serde = { version = "1.0", features = ["derive"] }
 sha3 = "0.10.8"
 k256 = { version = "0.13", features = ["ecdsa", "arithmetic"] }
+hex = "0.4"
+
+[dev-dependencies]

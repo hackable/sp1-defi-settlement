@@ -1,142 +1,17 @@
-use defi_lib::defi::{verify_settlement, Balance, Delta, Domain, MatchFill, Order, SettlementInput, Side};
-use k256::ecdsa::{signature::DigestSigner, Signature, SigningKey, VerifyingKey};
+use defi_lib::defi::{
+    verify_settlement, Balance, Delta, Domain, MatchFill, Order, SettlementInput, Side,
+    order_struct_hash, sign_order, addr_from_signer,
+};
+use k256::ecdsa::SigningKey;
 use sha3::{Digest, Keccak256};
 use defi_lib::merkle::{hash_order_leaf, hash_filled_leaf};
 
 type Address = [u8; 20];
 type Asset = [u8; 32];
 
-fn addr_from_signer(sk: &SigningKey) -> Address {
-    let vk = *sk.verifying_key();
-    let pub_uncompressed = vk.to_encoded_point(false);
-    let bytes = pub_uncompressed.as_bytes();
-    let mut keccak = Keccak256::new();
-    keccak.update(&bytes[1..]);
-    let out = keccak.finalize();
-    let mut addr = [0u8; 20];
-    addr.copy_from_slice(&out[12..]);
-    addr
-}
-
-fn pubkey_x(sk: &SigningKey) -> [u8; 32] {
-    let vk: VerifyingKey = *sk.verifying_key();
-    let pub_uncompressed = vk.to_encoded_point(false);
-    let bytes = pub_uncompressed.as_bytes();
-    let mut out = [0u8; 32];
-    out.copy_from_slice(&bytes[1..33]);
-    out
-}
-
-fn pubkey_y(sk: &SigningKey) -> [u8; 32] {
-    let vk: VerifyingKey = *sk.verifying_key();
-    let pub_uncompressed = vk.to_encoded_point(false);
-    let bytes = pub_uncompressed.as_bytes();
-    let mut out = [0u8; 32];
-    out.copy_from_slice(&bytes[33..]);
-    out
-}
-
-fn eip712_domain_separator(domain: &Domain) -> [u8; 32] {
-    let mut keccak = Keccak256::new();
-    keccak.update(b"EIP712Domain(uint256 chainId,address verifyingContract)");
-    let typehash = keccak.finalize();
-
-    let mut e = Keccak256::new();
-    e.update(&typehash);
-    let mut buf = [0u8; 32];
-    buf[24..].copy_from_slice(&domain.chain_id.to_be_bytes());
-    e.update(&buf);
-    let mut abuf = [0u8; 32];
-    abuf[12..].copy_from_slice(&domain.exchange);
-    e.update(&abuf);
-    let out = e.finalize();
-    let mut sep = [0u8; 32];
-    sep.copy_from_slice(&out);
-    sep
-}
-
-fn order_struct_hash(order: &Order) -> [u8; 32] {
-    let mut keccak = Keccak256::new();
-    keccak.update(b"Order(address maker,bytes32 base,bytes32 quote,uint8 side,uint128 price_n,uint128 price_d,uint128 amount,uint64 nonce,uint64 expiry)");
-    let typehash = keccak.finalize();
-
-    let mut e = Keccak256::new();
-    e.update(&typehash);
-    let mut maker_buf = [0u8; 32];
-    maker_buf[12..].copy_from_slice(&order.maker);
-    e.update(&maker_buf);
-    e.update(&order.base);
-    e.update(&order.quote);
-    let mut side_buf = [0u8; 32];
-    side_buf[31] = match order.side { Side::Buy => 0, Side::Sell => 1 };
-    e.update(&side_buf);
-    let mut u128buf = [0u8; 32];
-    u128buf[16..].copy_from_slice(&order.price_n.to_be_bytes());
-    e.update(&u128buf);
-    u128buf[16..].copy_from_slice(&order.price_d.to_be_bytes());
-    e.update(&u128buf);
-    u128buf[16..].copy_from_slice(&order.amount.to_be_bytes());
-    e.update(&u128buf);
-    let mut u64buf = [0u8; 32];
-    u64buf[24..].copy_from_slice(&order.nonce.to_be_bytes());
-    e.update(&u64buf);
-    u64buf[24..].copy_from_slice(&order.expiry.to_be_bytes());
-    e.update(&u64buf);
-    let out = e.finalize();
-    let mut sh = [0u8; 32];
-    sh.copy_from_slice(&out);
-    sh
-}
-
 fn filled_leaf(order_hash: [u8; 32], amount: u128) -> [u8; 32] { hash_filled_leaf(order_hash, amount) }
 
-fn sign_order(order: &Order, domain: &Domain, sk: &SigningKey) -> (u8, [u8; 32], [u8; 32]) {
-    let domain_sep = eip712_domain_separator(domain);
-    let struct_hash = order_struct_hash(order);
-    let mut hasher = Keccak256::new();
-    hasher.update(&[0x19, 0x01]);
-    hasher.update(&domain_sep);
-    hasher.update(&struct_hash);
-    let sig: Signature = sk.sign_digest(hasher);
-    let bytes = sig.to_bytes();
-    let mut r = [0u8; 32];
-    let mut s = [0u8; 32];
-    r.copy_from_slice(&bytes[..32]);
-    s.copy_from_slice(&bytes[32..]);
-    (27, r, s)
-}
-
-fn merkle_root_sorted(mut hashes: Vec<[u8; 32]>) -> [u8; 32] {
-    if hashes.is_empty() {
-        let mut zero = [0u8; 32];
-        zero.copy_from_slice(&Keccak256::digest([]));
-        return zero;
-    }
-    while hashes.len() > 1 {
-        let mut next: Vec<[u8; 32]> = Vec::with_capacity((hashes.len() + 1) / 2);
-        let mut i = 0;
-        while i < hashes.len() {
-            if i + 1 < hashes.len() {
-                let a = hashes[i];
-                let b = hashes[i + 1];
-                let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
-                let mut h = Keccak256::new();
-                h.update(lo);
-                h.update(hi);
-                let out = h.finalize();
-                let mut parent = [0u8; 32];
-                parent.copy_from_slice(&out);
-                next.push(parent);
-                i += 2;
-            } else {
-                next.push(hashes[i]);
-                i += 1;
-            }
-        }
-        hashes = next;
-    }
-    hashes[0]
-}
+use defi_lib::merkle::merkle_root_from_leaves as merkle_root_sorted;
 
 fn leaf_hash(owner: Address, asset: Asset, amount: u128) -> [u8; 32] {
     let mut h = Keccak256::new();
@@ -168,8 +43,6 @@ fn build_sample_input() -> SettlementInput {
         amount: 10,
         nonce: 100,
         expiry: u64::MAX,
-        pubkey_x: pubkey_x(&buy_sk),
-        pubkey_y: pubkey_y(&buy_sk),
         v: 0,
         r: [0u8; 32],
         s: [0u8; 32],
@@ -184,16 +57,14 @@ fn build_sample_input() -> SettlementInput {
         amount: 10,
         nonce: 200,
         expiry: u64::MAX,
-        pubkey_x: pubkey_x(&sell_sk),
-        pubkey_y: pubkey_y(&sell_sk),
         v: 0,
         r: [0u8; 32],
         s: [0u8; 32],
     };
 
-    let (_v_b, r_b, s_b) = sign_order(&buy, &domain, &buy_sk);
+    let (_v_b, r_b, s_b) = sign_order(&buy, &domain, &buy_sk).unwrap();
     buy.v = _v_b; buy.r = r_b; buy.s = s_b;
-    let (_v_s, r_s, s_s) = sign_order(&sell, &domain, &sell_sk);
+    let (_v_s, r_s, s_s) = sign_order(&sell, &domain, &sell_sk).unwrap();
     sell.v = _v_s; sell.r = r_s; sell.s = s_s;
 
     let matches = vec![MatchFill { buy_idx: 0, sell_idx: 1, base_filled: 5, quote_paid: 10 }];
@@ -353,4 +224,128 @@ fn test_canceled_order_rejected() {
     // Now that the root encodes buy as canceled (1), the guest should reject due to cancel proof failure.
     let err = verify_settlement(&input).unwrap_err();
     assert!(err.contains("cancellationsRoot") || err.contains("cancel") || err.contains("proof"));
+}
+
+#[test]
+fn test_ghost_touched_rejected() {
+    // Start from a valid sample, then remove all matches but keep touched proofs.
+    let mut input = build_sample_input();
+    input.matches.clear();
+    input.proposed_deltas.clear();
+    let err = verify_settlement(&input).unwrap_err();
+    assert!(err.contains("touched order") || err.contains("not matched") || err.contains("touched"));
+}
+
+#[test]
+fn test_touched_limit_rejected() {
+    // Build a minimal input but exceed touched limit (checked first in verify_settlement)
+    let domain = Domain { chain_id: 1, exchange: [0x11; 20] };
+    let input = SettlementInput {
+        domain,
+        orders: vec![],
+        matches: vec![],
+        initial_balances: vec![],
+        proposed_deltas: vec![],
+        timestamp: 0,
+        prev_filled_root: [0u8; 32],
+        prev_filled: vec![],
+        cancellations_root: [0u8; 32],
+        orders_root: [0u8; 32],
+        touched: (0..1001).map(|_| defi_lib::defi::TouchedProof {
+            order_index: 0,
+            order_id: [0u8; 32],
+            prev_filled: 0,
+            filled_proof: vec![],
+            orders_proof: vec![],
+            cancel_proof: vec![],
+        }).collect(),
+    };
+    let err = verify_settlement(&input).unwrap_err();
+    assert!(err.contains("touched orders limit") || err.contains("exceeded maximum touched orders limit"));
+}
+
+#[test]
+fn test_price_multiplication_overflow_rejected() {
+    // Construct two orders with huge price_n and base_filled to trigger checked_mul overflow in price check
+    let domain = Domain { chain_id: 1, exchange: [0x11; 20] };
+    let buy_sk = SigningKey::from_bytes((&[3u8; 32]).into()).unwrap();
+    let sell_sk = SigningKey::from_bytes((&[4u8; 32]).into()).unwrap();
+    let buyer = addr_from_signer(&buy_sk);
+    let seller = addr_from_signer(&sell_sk);
+    let base: Asset = [0xCC; 32];
+    let quote: Asset = [0xDD; 32];
+    let mut buy = Order { maker: buyer, base, quote, side: Side::Buy, price_n: u128::MAX, price_d: 1, amount: u128::MAX, nonce: 1, expiry: u64::MAX, v: 0, r: [0u8; 32], s: [0u8; 32] };
+    let mut sell = Order { maker: seller, base, quote, side: Side::Sell, price_n: 1, price_d: 1, amount: u128::MAX, nonce: 2, expiry: u64::MAX, v: 0, r: [0u8; 32], s: [0u8; 32] };
+    let (vb, rb, sb) = sign_order(&buy, &domain, &buy_sk).unwrap();
+    buy.v = vb; buy.r = rb; buy.s = sb;
+    let (vs, rs, ss) = sign_order(&sell, &domain, &sell_sk).unwrap();
+    sell.v = vs; sell.r = rs; sell.s = ss;
+    let matches = vec![MatchFill { buy_idx: 0, sell_idx: 1, base_filled: u128::MAX, quote_paid: 1 }];
+    let input = SettlementInput {
+        domain,
+        orders: vec![buy, sell],
+        matches,
+        initial_balances: vec![],
+        proposed_deltas: vec![],
+        timestamp: 0,
+        prev_filled_root: [0u8; 32],
+        prev_filled: vec![0, 0],
+        cancellations_root: [0u8; 32],
+        orders_root: [0u8; 32],
+        touched: vec![],
+    };
+    let err = defi_lib::defi::compute_final_entries(&input).unwrap_err();
+    assert!(err.contains("price multiplication overflow"));
+}
+
+#[test]
+fn test_cumulative_owed_overflow_rejected() {
+    // Force cumulative owed overflow by setting initial balance at u128::MAX and positive delta
+    let domain = Domain { chain_id: 1, exchange: [0x11; 20] };
+    let buy_sk = SigningKey::from_bytes((&[5u8; 32]).into()).unwrap();
+    let sell_sk = SigningKey::from_bytes((&[6u8; 32]).into()).unwrap();
+    let buyer = addr_from_signer(&buy_sk);
+    let seller = addr_from_signer(&sell_sk);
+    let base: Asset = [0xEE; 32];
+    let quote: Asset = [0xFF; 32];
+    let mut buy = Order { maker: buyer, base, quote, side: Side::Buy, price_n: 1, price_d: 1, amount: 1, nonce: 1, expiry: u64::MAX, v: 0, r: [0u8; 32], s: [0u8; 32] };
+    let mut sell = Order { maker: seller, base, quote, side: Side::Sell, price_n: 1, price_d: 1, amount: 1, nonce: 2, expiry: u64::MAX, v: 0, r: [0u8; 32], s: [0u8; 32] };
+    let (vb, rb, sb) = sign_order(&buy, &domain, &buy_sk).unwrap();
+    buy.v = vb; buy.r = rb; buy.s = sb;
+    let (vs, rs, ss) = sign_order(&sell, &domain, &sell_sk).unwrap();
+    sell.v = vs; sell.r = rs; sell.s = ss;
+    let matches = vec![MatchFill { buy_idx: 0, sell_idx: 1, base_filled: 1, quote_paid: 1 }];
+    let initial_balances = vec![
+        Balance { owner: seller, asset: quote, amount: u128::MAX }, // will overflow when adding +1
+    ];
+    let input = SettlementInput {
+        domain,
+        orders: vec![buy, sell],
+        matches,
+        initial_balances,
+        proposed_deltas: vec![],
+        timestamp: 0,
+        prev_filled_root: [0u8; 32],
+        prev_filled: vec![0, 0],
+        cancellations_root: [0u8; 32],
+        orders_root: [0u8; 32],
+        touched: vec![],
+    };
+    assert!(defi_lib::defi::compute_cumulative_entries(&input).is_err());
+}
+#[test]
+fn test_high_s_signature_rejected() {
+    // Start from valid sample, then force a high-s signature on buy order.
+    let mut input = build_sample_input();
+    // secp256k1 half-order + 1 (big-endian)
+    let mut s_hi = [0u8; 32];
+    s_hi.copy_from_slice(&[
+        0x80,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+        0x00,0x00,0x00,0x00,0x80,0x00,0x00,0x00,
+        0xA2,0xA8,0x91,0x8C,0xA8,0x5B,0xAF,0xE2,
+        0x20,0x16,0xD0,0xB9,0x97,0xE4,0xDF,0x61,
+    ]);
+    input.orders[0].s = s_hi; // r and v remain valid-looking, but s is non-canonical
+    let err = verify_settlement(&input).unwrap_err();
+    assert!(err.contains("invalid signature") || err.contains("signature"));
 }
