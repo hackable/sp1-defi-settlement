@@ -100,7 +100,7 @@ fn build_sample_input() -> SettlementInput {
         defi_lib::defi::TouchedProof { order_index: 0, order_id: buy_hash, prev_filled: 0, filled_proof: filled_proof_buy.clone(), orders_proof: orders_proof_buy.clone(), cancel_proof: filled_proof_buy },
         defi_lib::defi::TouchedProof { order_index: 1, order_id: sell_hash, prev_filled: 0, filled_proof: filled_proof_sell.clone(), orders_proof: orders_proof_sell.clone(), cancel_proof: filled_proof_sell },
     ];
-    SettlementInput { domain, orders: vec![buy, sell], matches, initial_balances, proposed_deltas, timestamp: 0, prev_filled_root, prev_filled, cancellations_root, orders_root, touched }
+    SettlementInput { domain, orders: vec![buy, sell], matches, initial_balances, proposed_deltas, timestamp: 0, prev_filled_root, prev_filled, cancellations_root, cancellations_updates: vec![], orders_root, orders_touched: touched }
 }
 
 #[test]
@@ -250,8 +250,9 @@ fn test_touched_limit_rejected() {
         prev_filled_root: [0u8; 32],
         prev_filled: vec![],
         cancellations_root: [0u8; 32],
+        cancellations_updates: vec![],
         orders_root: [0u8; 32],
-        touched: (0..1001).map(|_| defi_lib::defi::TouchedProof {
+        orders_touched: (0..1001).map(|_| defi_lib::defi::TouchedProof {
             order_index: 0,
             order_id: [0u8; 32],
             prev_filled: 0,
@@ -291,8 +292,9 @@ fn test_price_multiplication_overflow_rejected() {
         prev_filled_root: [0u8; 32],
         prev_filled: vec![0, 0],
         cancellations_root: [0u8; 32],
+        cancellations_updates: vec![],
         orders_root: [0u8; 32],
-        touched: vec![],
+        orders_touched: vec![],
     };
     let err = defi_lib::defi::compute_final_entries(&input).unwrap_err();
     assert!(err.contains("price multiplication overflow"));
@@ -328,8 +330,9 @@ fn test_cumulative_owed_overflow_rejected() {
         prev_filled_root: [0u8; 32],
         prev_filled: vec![0, 0],
         cancellations_root: [0u8; 32],
+        cancellations_updates: vec![],
         orders_root: [0u8; 32],
-        touched: vec![],
+        orders_touched: vec![],
     };
     assert!(defi_lib::defi::compute_cumulative_entries(&input).is_err());
 }

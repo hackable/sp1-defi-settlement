@@ -114,7 +114,8 @@ pub fn build_sample_input() -> Result<SettlementInput, String> {
         prev_filled_root,
         prev_filled,
         cancellations_root,
+        cancellations_updates: vec![],
         orders_root,
-        touched,
+        orders_touched: touched,
     })
 }

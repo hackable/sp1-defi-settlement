@@ -79,6 +79,7 @@ fn main() -> Result<()> {
         println!("prevFilledRoot: 0x{}", hex::encode(pv.prevFilledRoot));
         println!("filledRoot: 0x{}", hex::encode(pv.filledRoot));
         println!("cancellationsRoot: 0x{}", hex::encode(pv.cancellationsRoot));
+        println!("domainSeparator: 0x{}", hex::encode(pv.domainSeparator));
     } else {
         let (pk, vk) = client.setup(DEFI_ELF);
         let proof = client.prove(&pk, &stdin).run().context("failed to generate proof")?;
@@ -91,6 +92,7 @@ fn main() -> Result<()> {
         println!("prevFilledRoot: 0x{}", hex::encode(pv.prevFilledRoot));
         println!("filledRoot: 0x{}", hex::encode(pv.filledRoot));
         println!("cancellationsRoot: 0x{}", hex::encode(pv.cancellationsRoot));
+        println!("domainSeparator: 0x{}", hex::encode(pv.domainSeparator));
     }
     Ok(())
 }
@@ -141,7 +143,16 @@ fn export_sample_json(input: &SettlementInput, filename: &str) -> Result<(), Str
         asset: hex32(&d.asset),
         delta: d.delta.to_string(),
     }).collect();
-    let json = JsonInput { domain, orders, matches, initial_balances, proposed_deltas, timestamp: input.timestamp.to_string() };
+    let json = JsonInput {
+        domain,
+        orders,
+        matches,
+        initial_balances,
+        proposed_deltas,
+        timestamp: input.timestamp.to_string(),
+        cancellations_updates: None,
+        orders_touched: None,
+    };
 
     let out = serde_json::to_string_pretty(&json).map_err(|e| e.to_string())?;
     let path = PathBuf::from(filename);

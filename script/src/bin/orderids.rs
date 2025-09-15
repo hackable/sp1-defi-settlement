@@ -65,6 +65,7 @@ fn main() -> Result<()> {
     } else {
         let file = args.file.as_ref().unwrap();
         let data = std::fs::read_to_string(file).with_context(|| format!("reading {}", file))?;
+        // InputJson works even if cancellationsUpdates/ordersTouched are present; we only need orders
         let json: JsonInput = serde_json::from_str(&data).context("parsing JSON input")?;
         json.orders.iter().map(|o| order_id_from_json(o)).collect::<Result<Vec<_>>>()?
     };

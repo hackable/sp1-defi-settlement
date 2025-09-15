@@ -40,6 +40,31 @@ pub mod json {
         pub initial_balances: Vec<BalanceJson>,
         pub proposed_deltas: Vec<DeltaJson>,
         pub timestamp: String,
+        // Optional cancellations updates to be applied (sparse)
+        #[serde(default)]
+        pub cancellations_updates: Option<Vec<CancellationUpdateJson>>,
+        // Optional touched proofs list (if provided externally)
+        #[serde(default)]
+        pub orders_touched: Option<Vec<TouchedProofJson>>,
+    }
+
+    #[derive(Serialize, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct CancellationUpdateJson {
+        #[serde(rename = "orderId")] pub order_id: String,
+        pub prev_value: String,
+        pub new_value: String,
+        pub proof: Vec<String>,
+    }
+
+    #[derive(Serialize, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct TouchedProofJson {
+        pub order_index: u32,
+        #[serde(rename = "orderId")] pub order_id: String,
+        pub prev_filled: String,
+        pub filled_proof: Vec<String>,
+        pub orders_proof: Vec<String>,
+        pub cancel_proof: Vec<String>,
     }
 }
-

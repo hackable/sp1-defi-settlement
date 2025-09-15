@@ -89,12 +89,23 @@ fn input_to_native(j: JsonInput) -> Result<SettlementInput> {
     let prev_filled = vec![0u128; orders.len()];
     let mut prev_filled_root = [0u8; 32];
     prev_filled_root.copy_from_slice(&Keccak256::digest([]));
-    // For optimized path, compute orders_root and leave touched empty (this CLI focuses on balances).
+    // For optimized path, compute orders_root and leave orders_touched empty (this CLI focuses on balances).
     let order_ids: Vec<[u8; 32]> = orders.iter().map(|o| order_struct_hash(o)).collect();
     let orders_root = orders_root_from_list(&order_ids);
     // Compute cancellations_root as parallel tree with value=0 for all orders by default.
     let zero_vals: Vec<u128> = vec![0u128; orders.len()];
     let cancellations_root = filled_root_from_orders(&orders.iter().collect::<Vec<_>>(), &zero_vals);
+    // Parse cancellations_updates if present
+    let cancellations_updates = if let Some(upds) = j.cancellations_updates {
+        upds.into_iter().map(|u| -> Result<defi_lib::defi::CancellationUpdate> {
+            Ok(defi_lib::defi::CancellationUpdate {
+                order_id: parse_hex(&u.order_id).map_err(|e| anyhow::anyhow!(e))?,
+                prev_value: to_u128(&u.prev_value).map_err(|e| anyhow::anyhow!(e))?,
+                new_value: to_u128(&u.new_value).map_err(|e| anyhow::anyhow!(e))?,
+                proof: u.proof.into_iter().map(|h| parse_hex(&h).map_err(|e| anyhow::anyhow!(e))).collect::<Result<Vec<_>>>()?,
+            })
+        }).collect::<Result<Vec<_>>>()?
+    } else { vec![] };
     Ok(SettlementInput {
         domain,
         orders,
@@ -105,8 +116,9 @@ fn input_to_native(j: JsonInput) -> Result<SettlementInput> {
         prev_filled_root,
         prev_filled,
         cancellations_root,
+        cancellations_updates,
         orders_root,
-        touched: vec![],
+        orders_touched: vec![],
     })
 }
 

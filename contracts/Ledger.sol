@@ -28,7 +28,7 @@ contract Ledger {
     bytes32 public filledRoot;
     bytes32 public cancellationsRoot; // set of canceled orderIds (root)
 
-    mapping(address => mapping(bytes32 => uint256)) public spent;
+    mapping(address => mapping(bytes32 => uint128)) public spent;
 
     event RootUpdated(
         bytes32 indexed oldBalancesRoot,
@@ -47,14 +47,21 @@ contract Ledger {
         cancellationsRoot = _genesisCancellationsRoot;
     }
 
-    // publicValues ABI: (bytes32 balancesRoot, bytes32 prevFilledRoot, bytes32 filledRoot, bytes32 cancellationsRoot, uint32 matchCount)
+    // publicValues ABI: (bytes32 balancesRoot, bytes32 prevFilledRoot, bytes32 filledRoot, bytes32 cancellationsRoot, bytes32 domainSeparator, uint32 matchCount)
     function updateRoot(bytes calldata proof, bytes calldata publicValues) external {
         require(verifier.verify(proof, publicValues), "invalid proof");
-        (bytes32 newBalancesRoot, bytes32 prevFilledRoot, bytes32 newFilledRoot, bytes32 cancRoot, uint32 matchCount) =
-            abi.decode(publicValues, (bytes32, bytes32, bytes32, bytes32, uint32));
+        (bytes32 newBalancesRoot, bytes32 prevFilledRoot, bytes32 newFilledRoot, bytes32 cancRoot, bytes32 domainSeparator, uint32 matchCount) =
+            abi.decode(publicValues, (bytes32, bytes32, bytes32, bytes32, bytes32, uint32));
         require(prevFilledRoot == filledRoot, "filled root mismatch");
         // Bind to the current cancellations view so the proof cannot ignore cancels.
         require(cancRoot == cancellationsRoot, "cancellations root mismatch");
+        // Validate domainSeparator to prevent cross-chain replay attacks
+        bytes32 expectedDomainSeparator = keccak256(abi.encode(
+            keccak256("EIP712Domain(uint256 chainId,address verifyingContract)"),
+            block.chainid,
+            address(this)
+        ));
+        require(domainSeparator == expectedDomainSeparator, "invalid domain separator");
         bytes32 oldBalancesRoot = balancesRoot;
         balancesRoot = newBalancesRoot;
         filledRoot = newFilledRoot;
@@ -66,15 +73,15 @@ contract Ledger {
         cancellationsRoot = newCancellationsRoot;
     }
 
-    function withdraw(address owner, bytes32 asset, uint128 cumulativeOwed, uint256 amountToWithdraw, bytes32[] calldata proof) external {
+    function withdraw(address owner, bytes32 asset, uint128 cumulativeOwed, uint128 amountToWithdraw, bytes32[] calldata proof) external {
         require(msg.sender == owner, "only owner");
         bytes32 leaf = BalancesLeaf.leafHash(owner, asset, cumulativeOwed);
         require(MerkleProofSorted.verify(proof, balancesRoot, leaf), "bad proof");
-        uint256 already = spent[owner][asset];
+        uint128 already = spent[owner][asset];
         require(already + amountToWithdraw <= cumulativeOwed, "exceeds cumulative");
         spent[owner][asset] = already + amountToWithdraw;
         address token = address(uint160(uint256(asset)));
-        require(IERC20(token).transfer(owner, amountToWithdraw), "transfer failed");
+        require(IERC20(token).transfer(owner, uint256(amountToWithdraw)), "transfer failed");
         emit Withdrawn(balancesRoot, owner, asset, amountToWithdraw);
     }
 }

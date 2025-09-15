@@ -4,7 +4,7 @@
 sp1_zkvm::entrypoint!(main);
 
 use alloy_sol_types::SolType;
-use defi_lib::defi::{verify_settlement, SettlementInput};
+use defi_lib::defi::{verify_settlement, SettlementInput, eip712_domain_separator};
 use defi_lib::SettlementPublicValues;
 
 pub fn main() {
@@ -20,6 +20,7 @@ pub fn main() {
         prevFilledRoot: alloy_sol_types::private::FixedBytes(out.prev_filled_root),
         filledRoot: alloy_sol_types::private::FixedBytes(out.filled_root),
         cancellationsRoot: alloy_sol_types::private::FixedBytes(out.cancellations_root),
+        domainSeparator: alloy_sol_types::private::FixedBytes(eip712_domain_separator(&input.domain)),
         matchCount: out.match_count,
     };
     let bytes = SettlementPublicValues::abi_encode(&pv);

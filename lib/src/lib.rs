@@ -27,6 +27,8 @@ sol! {
         bytes32 prevFilledRoot;
         bytes32 filledRoot;
         bytes32 cancellationsRoot;
+        // EIP-712 domain separator binding (chainId, exchange)
+        bytes32 domainSeparator;
         uint32 matchCount;
     }
 }
@@ -35,6 +37,7 @@ sol! {
 /// DeFi settlement verification module.
 pub mod defi {
     use super::*;
+    use crate::merkle::fold_sorted_pair;
     use core::cmp::Ordering;
     use std::collections::BTreeMap;
 
@@ -105,11 +108,13 @@ pub mod defi {
         // Previous cumulative filled per order (aligned with orders). For now, proofs to prev_filled_root
         // are out of scope; the guest will compute the new root from these values + this batch fills.
         pub prev_filled: Vec<u128>,
-        // Cancellations root (orderId -> 0/1); 1 means canceled.
+        // Cancellations root BEFORE this batch (orderId -> 0/1); 1 means canceled.
         pub cancellations_root: [u8; 32],
+        // Optional cancellations updates to apply in this batch via sparse Merkle update.
+        pub cancellations_updates: Vec<CancellationUpdate>,
         // Optimized inputs: orders root and per-order proofs for touched orders.
         pub orders_root: [u8; 32],
-        pub touched: Vec<TouchedProof>,
+        pub orders_touched: Vec<TouchedProof>,
     }
 
     #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -120,6 +125,14 @@ pub mod defi {
         pub filled_proof: Vec<[u8; 32]>,
         pub orders_proof: Vec<[u8; 32]>,
         pub cancel_proof: Vec<[u8; 32]>,
+    }
+
+    #[derive(Clone, Debug, Serialize, Deserialize)]
+    pub struct CancellationUpdate {
+        pub order_id: [u8; 32],
+        pub prev_value: u128,
+        pub new_value: u128,
+        pub proof: Vec<[u8; 32]>,
     }
 
     #[derive(Clone, Debug)]
@@ -133,13 +146,13 @@ pub mod defi {
 
     pub fn verify_settlement(input: &SettlementInput) -> Result<SettlementOutput, String> {
         const MAX_TOUCHED_ORDERS: usize = 1_000;
-        if input.touched.len() > MAX_TOUCHED_ORDERS {
+        if input.orders_touched.len() > MAX_TOUCHED_ORDERS {
             return Err("exceeded maximum touched orders limit".to_string());
         }
         // Verify per-order proofs for all touched orders and ensure coverage of matched indices.
         // Build map: index -> proof
         let mut touched_map = BTreeMap::new();
-        for tp in &input.touched {
+        for tp in &input.orders_touched {
             if (tp.order_index as usize) >= input.orders.len() {
                 return Err("touched order_index out of bounds".to_string());
             }
@@ -198,12 +211,13 @@ pub mod defi {
         // Compute new filled_root via sparse updates using touched proofs.
         // Note: we intentionally avoid recomputing prev_filled_root from full lists to scale to large N.
         let filled_root = filled_root_sparse_update(input)?;
+        let cancellations_root = cancellations_root_sparse_update(input)?;
 
         Ok(SettlementOutput {
             balances_root,
             prev_filled_root: input.prev_filled_root,
             filled_root,
-            cancellations_root: input.cancellations_root,
+            cancellations_root,
             match_count: input.matches.len() as u32,
         })
     }
@@ -606,7 +620,7 @@ pub mod defi {
 
         // Build a map from order index to its touched proof for quick lookup and verify basic bindings.
         let mut touched_by_index: BTreeMap<usize, &TouchedProof> = BTreeMap::new();
-        for tp in &input.touched {
+        for tp in &input.orders_touched {
             let idx = tp.order_index as usize;
             if touched_by_index.insert(idx, tp).is_some() {
                 return Err("duplicate touched proof for order index".to_string());
@@ -614,7 +628,7 @@ pub mod defi {
         }
 
         // Ghost order protection: every touched order must be matched in this batch.
-        for tp in &input.touched {
+        for tp in &input.orders_touched {
             let idx = tp.order_index as usize;
             if !this_batch_fill.contains_key(&idx) {
                 return Err("touched order not matched in this batch".to_string());
@@ -767,6 +781,104 @@ pub mod defi {
     // Removed unused helper that recomputed filled root from full lists.
 
     // Merkle helpers moved to crate::merkle (shared across lib/tests/scripts)
+
+    fn cancellations_root_sparse_update(input: &SettlementInput) -> Result<[u8; 32], String> {
+        use std::collections::BTreeMap;
+        // Early exit
+        if input.cancellations_updates.is_empty() { return Ok(input.cancellations_root); }
+
+        // Forbid updates that touch matched orders in this batch
+        let mut matched_ids = BTreeMap::new();
+        for m in &input.matches {
+            let bi = m.buy_idx as usize;
+            let si = m.sell_idx as usize;
+            if bi < input.orders.len() { matched_ids.insert(order_struct_hash(&input.orders[bi]), ()); }
+            if si < input.orders.len() { matched_ids.insert(order_struct_hash(&input.orders[si]), ()); }
+        }
+        for u in &input.cancellations_updates {
+            if matched_ids.contains_key(&u.order_id) {
+                return Err("cancellation update for matched order in same batch".to_string());
+            }
+            if !(u.new_value == 0 || u.new_value == 1) { return Err("invalid cancellation value".to_string()); }
+            if !(u.prev_value == 0 || u.prev_value == 1) { return Err("invalid previous cancellation value".to_string()); }
+            // Monotonic: prevent un-cancel; allow 0->1 or 0->0 or 1->1, but forbid 1->0
+            if u.prev_value == 1 && u.new_value == 0 { return Err("cannot uncancel order".to_string()); }
+        }
+
+        // Build caches analogous to filled_root_sparse_update
+        struct PathCache { old_nodes: Vec<[u8; 32]>, proof: Vec<[u8; 32]>, new_leaf: [u8; 32], order_id: [u8; 32] }
+        let mut caches: BTreeMap<[u8; 32], PathCache> = BTreeMap::new();
+        for u in &input.cancellations_updates {
+            // Verify prev leaf inclusion
+            let prev_leaf = crate::merkle::hash_filled_leaf(u.order_id, u.prev_value);
+            // Build old path and check root
+            let mut old_nodes: Vec<[u8; 32]> = Vec::with_capacity(u.proof.len() + 1);
+            let mut cur = prev_leaf;
+            old_nodes.push(cur);
+            for sib in &u.proof {
+                cur = fold_sorted_pair(cur, *sib);
+                old_nodes.push(cur);
+            }
+            if *old_nodes.last().unwrap() != input.cancellations_root {
+                return Err("cancellation proof does not lead to cancellationsRoot".to_string());
+            }
+            let new_leaf = crate::merkle::hash_filled_leaf(u.order_id, u.new_value);
+            if caches.insert(u.order_id, PathCache { old_nodes, proof: u.proof.clone(), new_leaf, order_id: u.order_id }).is_some() {
+                return Err("duplicate cancellation update for orderId".to_string());
+            }
+        }
+
+        // Merge updates across levels
+        let mut level_maps: Vec<BTreeMap<[u8; 32], [u8; 32]>> = Vec::new();
+        let max_depth = caches.values().map(|c| c.proof.len()).max().unwrap_or(0);
+        const MAX_TREE_DEPTH: usize = 50;
+        if max_depth > MAX_TREE_DEPTH { return Err("tree depth exceeds maximum".to_string()); }
+
+        // Seed level 0 replacements: old leaf -> new leaf
+        level_maps.push(BTreeMap::new());
+        for (_oid, c) in caches.iter() {
+            level_maps[0].insert(c.old_nodes[0], c.new_leaf);
+        }
+
+        let mut caches_sorted: Vec<&PathCache> = caches.values().collect();
+        caches_sorted.sort_by(|a, b| a.order_id.cmp(&b.order_id));
+
+        for lvl in 0..max_depth {
+            while level_maps.len() <= lvl + 1 { level_maps.push(BTreeMap::new()); }
+            for c in &caches_sorted {
+                if lvl < c.proof.len() {
+                    let child_old = c.old_nodes[lvl];
+                    let child_new = *level_maps[lvl].get(&child_old).ok_or_else(|| "missing child node in level map".to_string())?;
+                    let sib_old = c.proof[lvl];
+                    let sib_new = *level_maps[lvl].get(&sib_old).unwrap_or(&sib_old);
+                    let parent_new = fold_sorted_pair(child_new, sib_new);
+                    let parent_old = c.old_nodes[lvl + 1];
+                    match level_maps[lvl + 1].get(&parent_old) {
+                        Some(existing) if *existing != parent_new => return Err("conflicting parent updates in cancellations".to_string()),
+                        _ => { level_maps[lvl + 1].insert(parent_old, parent_new); }
+                    }
+                }
+            }
+        }
+
+        let h = level_maps.len().saturating_sub(1);
+        let final_root = match level_maps.get(h).and_then(|m| m.get(&input.cancellations_root)).copied() {
+            Some(root) => root,
+            None => input.cancellations_root,
+        };
+
+        // Validate each updated path recomputes to final_root
+        for c in &caches_sorted {
+            let mut cur = c.new_leaf;
+            for (i, sib_old) in c.proof.iter().copied().enumerate() {
+                let sib_new = *level_maps[i].get(&sib_old).unwrap_or(&sib_old);
+                cur = fold_sorted_pair(cur, sib_new);
+            }
+            if cur != final_root { return Err("cancellations path root mismatch after merge".to_string()); }
+        }
+
+        Ok(final_root)
+    }
 
     pub fn eip712_domain_separator(domain: &Domain) -> [u8; 32] {
         // typehash = keccak256("EIP712Domain(uint256 chainId,address verifyingContract)")
