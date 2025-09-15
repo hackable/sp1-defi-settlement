@@ -24,6 +24,10 @@ struct Args {
     #[arg(long)]
     sample: bool,
 
+    /// Number of orders to include in the sample (default: 4, must be even)
+    #[arg(long, default_value_t = 4)]
+    num_orders: usize,
+
     /// Export the SettlementInput JSON to the given path (works with --sample)
     #[arg(long)]
     export: Option<String>,
@@ -44,24 +48,25 @@ fn main() -> Result<()> {
 
     let client = ProverClient::from_env();
 
-    // Build input (sample for now)
+    // Build input with specified number of orders
     let input = if args.sample {
-        build_sample_input().context("building sample input")?
+        build_sample_with_orders(args.num_orders).context("building sample with orders")?
     } else {
         build_sample_input().context("building input")?
     };
 
+    println!("Processing settlement with {} orders ({} matches)...", input.orders.len(), input.matches.len());
+
     // Export JSON only if explicitly requested via --export. No default export.
-    let mut exported = false;
     if let Some(path) = &args.export {
         match export_sample_json(&input, path) {
-            Ok(_) => { println!("Wrote {}", path); exported = true; },
+            Ok(_) => println!("Wrote sample to {}", path),
             Err(e) => eprintln!("Warning: failed to write {}: {}", path, e),
         }
     }
 
     if args.export_only {
-        if !exported {
+        if args.export.is_none() {
             eprintln!("Nothing exported: provide --export <path>.");
         }
         return Ok(());
@@ -74,12 +79,14 @@ fn main() -> Result<()> {
     if args.execute {
         let (output, _report) = client.execute(DEFI_ELF, &stdin).run().context("execute run failed")?;
         let pv = SettlementPublicValues::abi_decode(output.as_slice()).expect("output should decode to SettlementPublicValues");
-        println!("matchCount: {}", pv.matchCount);
-        println!("balancesRoot: 0x{}", hex::encode(pv.balancesRoot));
-        println!("prevFilledRoot: 0x{}", hex::encode(pv.prevFilledRoot));
-        println!("filledRoot: 0x{}", hex::encode(pv.filledRoot));
-        println!("cancellationsRoot: 0x{}", hex::encode(pv.cancellationsRoot));
-        println!("domainSeparator: 0x{}", hex::encode(pv.domainSeparator));
+        println!("\nExecution Results:");
+        println!("  Orders: {}", input.orders.len());
+        println!("  Matches: {}", pv.matchCount);
+        println!("  balancesRoot: 0x{}", hex::encode(pv.balancesRoot));
+        println!("  prevFilledRoot: 0x{}", hex::encode(pv.prevFilledRoot));
+        println!("  filledRoot: 0x{}", hex::encode(pv.filledRoot));
+        println!("  cancellationsRoot: 0x{}", hex::encode(pv.cancellationsRoot));
+        println!("  domainSeparator: 0x{}", hex::encode(pv.domainSeparator));
     } else {
         let (pk, vk) = client.setup(DEFI_ELF);
         let proof = client.prove(&pk, &stdin).run().context("failed to generate proof")?;
@@ -87,18 +94,24 @@ fn main() -> Result<()> {
         client.verify(&proof, &vk).context("failed to verify proof")?;
         println!("Successfully verified proof!");
         let pv = SettlementPublicValues::abi_decode(proof.public_values.as_slice()).expect("proof public values should decode to SettlementPublicValues");
-        println!("matchCount: {}", pv.matchCount);
-        println!("balancesRoot: 0x{}", hex::encode(pv.balancesRoot));
-        println!("prevFilledRoot: 0x{}", hex::encode(pv.prevFilledRoot));
-        println!("filledRoot: 0x{}", hex::encode(pv.filledRoot));
-        println!("cancellationsRoot: 0x{}", hex::encode(pv.cancellationsRoot));
-        println!("domainSeparator: 0x{}", hex::encode(pv.domainSeparator));
+        println!("\nProof Results:");
+        println!("  Orders: {}", input.orders.len());
+        println!("  Matches: {}", pv.matchCount);
+        println!("  balancesRoot: 0x{}", hex::encode(pv.balancesRoot));
+        println!("  prevFilledRoot: 0x{}", hex::encode(pv.prevFilledRoot));
+        println!("  filledRoot: 0x{}", hex::encode(pv.filledRoot));
+        println!("  cancellationsRoot: 0x{}", hex::encode(pv.cancellationsRoot));
+        println!("  domainSeparator: 0x{}", hex::encode(pv.domainSeparator));
     }
     Ok(())
 }
 
 fn build_sample_input() -> Result<SettlementInput> {
     Ok(defi_lib::samples::build_sample_input().map_err(|e| anyhow::anyhow!(e))?)
+}
+
+fn build_sample_with_orders(num_orders: usize) -> Result<SettlementInput> {
+    Ok(defi_lib::samples::build_sample_input_with_orders(num_orders).map_err(|e| anyhow::anyhow!(e))?)
 }
 
 // filled_root_from_orders and orders_root_from_list provided by defi_lib::defi
