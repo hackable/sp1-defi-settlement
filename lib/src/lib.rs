@@ -26,6 +26,8 @@ sol! {
         bytes32 balancesRoot;
         bytes32 prevFilledRoot;
         bytes32 filledRoot;
+        // cancellations roots allow the proof to advance state without an external setter
+        bytes32 prevCancellationsRoot;
         bytes32 cancellationsRoot;
         // EIP-712 domain separator binding (chainId, exchange)
         bytes32 domainSeparator;
@@ -278,7 +280,11 @@ pub mod defi {
         // 3) Track remaining amounts per order, subtracting prev_filled to prevent cross-batch overfill.
         let mut remaining: Vec<u128> = Vec::with_capacity(input.orders.len());
         for (i, o) in input.orders.iter().enumerate() {
-            let prev = *input.prev_filled.get(i).unwrap_or(&0);
+            let prev = input
+                .prev_filled
+                .get(i)
+                .copied()
+                .unwrap_or(0);
             if prev > o.amount {
                 return Err("prev_filled exceeds order amount".to_string());
             }
@@ -435,7 +441,11 @@ pub mod defi {
         }
         let mut remaining: Vec<u128> = Vec::with_capacity(input.orders.len());
         for (i, o) in input.orders.iter().enumerate() {
-            let prev = *input.prev_filled.get(i).unwrap_or(&0);
+            let prev = input
+                .prev_filled
+                .get(i)
+                .copied()
+                .unwrap_or(0);
             if prev > o.amount {
                 return Err("prev_filled exceeds order amount".to_string());
             }
@@ -717,62 +727,65 @@ pub mod defi {
             other => other,
         });
 
-        // Level-by-level merge: level_maps[level][old_node] = new_node
-        let mut level_maps: Vec<BTreeMap<[u8; 32], [u8; 32]>> = Vec::new();
-
-        // Level 0: all leaves
-        while level_maps.len() <= 0 { level_maps.push(BTreeMap::new()); }
-        for (_idx, cache) in sorted.iter() {
-            let old_leaf = cache.old_nodes[0];
-            match level_maps[0].get(&old_leaf) {
-                Some(existing) if existing != &cache.new_leaf => return Err("conflicting leaf updates".to_string()),
-                _ => { level_maps[0].insert(old_leaf, cache.new_leaf); }
-            }
-        }
-
-        // Determine max depth and enforce a reasonable bound
         let max_depth = sorted.iter().map(|(_, c)| c.proof.len()).max().unwrap_or(0);
         const MAX_TREE_DEPTH: usize = 50;
         if max_depth > MAX_TREE_DEPTH { return Err("tree depth exceeds maximum".to_string()); }
 
-        // Build parents level-by-level
-        for lvl in 0..max_depth {
-            while level_maps.len() <= lvl { level_maps.push(BTreeMap::new()); }
-            while level_maps.len() <= lvl + 1 { level_maps.push(BTreeMap::new()); }
-            for (_idx, cache) in sorted.iter() {
-                if lvl < cache.proof.len() {
-                    let child_old = cache.old_nodes[lvl];
-                    let child_new = level_maps[lvl]
-                        .get(&child_old)
-                        .copied()
-                        .ok_or_else(|| "missing child node in level map".to_string())?;
-                    let sib_old = cache.proof[lvl];
-                    let sib_new = level_maps[lvl].get(&sib_old).copied().unwrap_or(sib_old);
-                    let parent_new = fold_sorted_pair(child_new, sib_new);
-                    let parent_old = cache.old_nodes[lvl + 1];
-                    match level_maps[lvl + 1].get(&parent_old) {
-                        Some(existing) if existing != &parent_new => return Err("conflicting parent updates".to_string()),
-                        _ => { level_maps[lvl + 1].insert(parent_old, parent_new); }
-                    }
-                }
+        // Map each old node hash to the cache and depth where it appears, and memoize leaf updates.
+        let mut node_sources: BTreeMap<[u8; 32], (usize, usize)> = BTreeMap::new();
+        let mut node_updates: BTreeMap<[u8; 32], [u8; 32]> = BTreeMap::new();
+        for (vec_idx, (_order_idx, cache)) in sorted.iter().enumerate() {
+            for (depth, node) in cache.old_nodes.iter().enumerate() {
+                node_sources.entry(*node).or_insert((vec_idx, depth));
             }
+            node_updates.insert(cache.old_nodes[0], cache.new_leaf);
         }
 
-        // New root at top level (handle empty updates)
-        let h = level_maps.len().saturating_sub(1);
-        let final_root = match level_maps.get(h).and_then(|m| m.get(&input.prev_filled_root)).copied() {
-            Some(root) => root,
-            None => input.prev_filled_root, // No updates applied (no matches) => root unchanged
-        };
+        fn resolve_node(
+            node_hash: [u8; 32],
+            node_sources: &BTreeMap<[u8; 32], (usize, usize)>,
+            node_updates: &mut BTreeMap<[u8; 32], [u8; 32]>,
+            caches: &[(usize, PathCache)],
+        ) -> Result<[u8; 32], String> {
+            if let Some(val) = node_updates.get(&node_hash) {
+                return Ok(*val);
+            }
+            if let Some(&(cache_idx, depth)) = node_sources.get(&node_hash) {
+                let cache = &caches[cache_idx].1;
+                if depth == 0 {
+                    node_updates.insert(node_hash, cache.new_leaf);
+                    return Ok(cache.new_leaf);
+                }
+                let child_old = cache.old_nodes[depth - 1];
+                let child_new = resolve_node(child_old, node_sources, node_updates, caches)?;
+                let sib_old = cache.proof[depth - 1];
+                let sib_new = resolve_node(sib_old, node_sources, node_updates, caches)?;
+                let parent_new = fold_sorted_pair(child_new, sib_new);
+                node_updates.insert(node_hash, parent_new);
+                return Ok(parent_new);
+            }
+            node_updates.insert(node_hash, node_hash);
+            Ok(node_hash)
+        }
+
+        let final_root = resolve_node(input.prev_filled_root, &node_sources, &mut node_updates, &sorted)?;
 
         // Tree consistency validation: each updated path must recompute to final_root
-        for (_idx, cache) in sorted.iter() {
+        for (order_idx, cache) in sorted.iter() {
             let mut cur = cache.new_leaf;
-            for (i, sib_old) in cache.proof.iter().copied().enumerate() {
-                let sib_new = level_maps[i].get(&sib_old).copied().unwrap_or(sib_old);
+            for sib_old in cache.proof.iter().copied() {
+                let sib_new = resolve_node(sib_old, &node_sources, &mut node_updates, &sorted)?;
                 cur = fold_sorted_pair(cur, sib_new);
             }
-            if cur != final_root { return Err("path root mismatch after merge".to_string()); }
+            if cur != final_root {
+                return Err(format!(
+                    "path root mismatch after merge (order_index={} order_id=0x{} expected=0x{} got=0x{})",
+                    order_idx,
+                    hex::encode(cache.order_id),
+                    hex::encode(final_root),
+                    hex::encode(cur)
+                ));
+            }
         }
 
         Ok(final_root)

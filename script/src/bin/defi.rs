@@ -85,6 +85,7 @@ fn main() -> Result<()> {
         println!("  balancesRoot: 0x{}", hex::encode(pv.balancesRoot));
         println!("  prevFilledRoot: 0x{}", hex::encode(pv.prevFilledRoot));
         println!("  filledRoot: 0x{}", hex::encode(pv.filledRoot));
+        println!("  prevCancellationsRoot: 0x{}", hex::encode(pv.prevCancellationsRoot));
         println!("  cancellationsRoot: 0x{}", hex::encode(pv.cancellationsRoot));
         println!("  domainSeparator: 0x{}", hex::encode(pv.domainSeparator));
     } else {
@@ -100,6 +101,7 @@ fn main() -> Result<()> {
         println!("  balancesRoot: 0x{}", hex::encode(pv.balancesRoot));
         println!("  prevFilledRoot: 0x{}", hex::encode(pv.prevFilledRoot));
         println!("  filledRoot: 0x{}", hex::encode(pv.filledRoot));
+        println!("  prevCancellationsRoot: 0x{}", hex::encode(pv.prevCancellationsRoot));
         println!("  cancellationsRoot: 0x{}", hex::encode(pv.cancellationsRoot));
         println!("  domainSeparator: 0x{}", hex::encode(pv.domainSeparator));
     }

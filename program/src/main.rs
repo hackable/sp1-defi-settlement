@@ -19,6 +19,7 @@ pub fn main() {
         balancesRoot: alloy_sol_types::private::FixedBytes(out.balances_root),
         prevFilledRoot: alloy_sol_types::private::FixedBytes(out.prev_filled_root),
         filledRoot: alloy_sol_types::private::FixedBytes(out.filled_root),
+        prevCancellationsRoot: alloy_sol_types::private::FixedBytes(input.cancellations_root),
         cancellationsRoot: alloy_sol_types::private::FixedBytes(out.cancellations_root),
         domainSeparator: alloy_sol_types::private::FixedBytes(eip712_domain_separator(&input.domain)),
         matchCount: out.match_count,

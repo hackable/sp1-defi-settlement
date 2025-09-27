@@ -26,9 +26,15 @@ pub fn build_sample_input_with_orders(num_orders: usize) -> Result<SettlementInp
     let mut order_ids: Vec<[u8; 32]> = Vec::new();
 
     // Generate buy/sell pairs
+    fn deterministic_key(seed: u64) -> Result<SigningKey, String> {
+        let mut bytes = [0u8; 32];
+        bytes[24..].copy_from_slice(&seed.to_be_bytes());
+        SigningKey::from_bytes((&bytes).into()).map_err(|_| "bad key".to_string())
+    }
+
     for i in 0..num_pairs {
-        let buy_sk = SigningKey::from_bytes((&[(i * 2 + 1) as u8; 32]).into()).map_err(|_| "bad key")?;
-        let sell_sk = SigningKey::from_bytes((&[(i * 2 + 2) as u8; 32]).into()).map_err(|_| "bad key")?;
+        let buy_sk = deterministic_key((i * 2 + 1) as u64)?;
+        let sell_sk = deterministic_key((i * 2 + 2) as u64)?;
         let buy_addr = addr_from_signer(&buy_sk);
         let sell_addr = addr_from_signer(&sell_sk);
 
@@ -106,10 +112,14 @@ pub fn build_sample_input_with_orders(num_orders: usize) -> Result<SettlementInp
     pairs.sort_by(|a, b| a.0.cmp(&b.0));
     let sorted_indices: Vec<usize> = pairs.iter().map(|p| p.1).collect();
     let orders_leaves_sorted: Vec<[u8; 32]> = pairs.iter().map(|(oid, _)| hash_order_leaf(*oid)).collect();
-    let filled_leaves_sorted: Vec<[u8; 32]> = pairs.iter().map(|(oid, _)| {
-        let orig_idx = order_ids.iter().position(|id| id == oid).unwrap();
-        hash_filled_leaf(*oid, prev_filled[orig_idx])
-    }).collect();
+    let mut filled_leaves_sorted: Vec<[u8; 32]> = Vec::with_capacity(pairs.len());
+    for (oid, _) in pairs.iter() {
+        let orig_idx = order_ids
+            .iter()
+            .position(|id| id == oid)
+            .ok_or_else(|| "order id missing when building filled leaves".to_string())?;
+        filled_leaves_sorted.push(hash_filled_leaf(*oid, prev_filled[orig_idx]));
+    }
 
     // Build merkle tree and get root
     let (_, _orders_root_calc) = build_merkle_proof_sorted(orders_leaves_sorted.clone(), 0);
@@ -119,7 +129,10 @@ pub fn build_sample_input_with_orders(num_orders: usize) -> Result<SettlementInp
     // Build touched proofs for all orders
     let mut touched = Vec::new();
     for i in 0..order_ids.len() {
-        let sorted_pos = sorted_indices.iter().position(|&idx| idx == i).unwrap();
+        let sorted_pos = sorted_indices
+            .iter()
+            .position(|&idx| idx == i)
+            .ok_or_else(|| "sorted index missing for touched proof".to_string())?;
         let (orders_proof, _) = build_merkle_proof_sorted(orders_leaves_sorted.clone(), sorted_pos);
         let (filled_proof, _) = build_merkle_proof_sorted(filled_leaves_sorted.clone(), sorted_pos);
 

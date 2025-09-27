@@ -39,6 +39,8 @@ All notable changes to this repository will be documented in this file.
 ### Changed
 - Removed Fibonacci demo program and ABI from the library; DeFi-only ABI remains.
 - Program now commits `{balancesRoot, prevFilledRoot, filledRoot, matchCount}`.
+- Public values expanded to include `{prevCancellationsRoot, cancellationsRoot, domainSeparator}`;
+  on-chain contract now updates cancellations root atomically with proof verification.
 - `script` runner prints `prevFilledRoot` and `filledRoot` in addition to `balancesRoot`.
 - README updated to reference new docs and binaries; trimmed legacy sections.
 - Mermaid diagrams sanitized for compatibility in docs.

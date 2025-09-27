@@ -28,14 +28,16 @@ The program is automatically built through `script/build.rs` when the script is 
 - Execute without generating a proof (debugging):
   ```sh
   cd script
-  cargo run --release -- --execute --sample
+  cargo run --release -- --execute --sample --num-orders 6
   ```
+  The `--num-orders` flag is optional (defaults to 4 orders and must remain even).
 
 - Generate an SP1 core proof (local verify):
   ```sh
   cd script
-  cargo run --release -- --prove --sample
+  SP1_PROVER=cpu cargo run --release -- --prove --sample --num-orders 6
   ```
+  Drop `--num-orders` to use the default sample size, or choose any even count to scale the demo batch.
 
 ### Leaves Dataset Builder
 

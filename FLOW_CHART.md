@@ -301,7 +301,7 @@ pub fn main() {
          │                       │    with verifier      │
          │                       │                       │
          │                       │ 2. Decode publicVals  │
-         │                       │    (6 fields)         │
+         │                       │    (7 fields)         │
          │                       │                       │
          │                       │ 3. Validate domain    │
          │                       │    separator          │
@@ -329,10 +329,11 @@ function updateRoot(bytes calldata proof, bytes calldata publicValues) external 
     // 1. Verify SP1 proof
     require(verifier.verify(proof, publicValues), "invalid proof");
 
-    // 2. Decode public values (6 fields now)
+    // 2. Decode public values (7 fields now)
     (bytes32 newBalancesRoot, bytes32 prevFilledRoot, bytes32 newFilledRoot,
-     bytes32 cancRoot, bytes32 domainSeparator, uint32 matchCount) =
-        abi.decode(publicValues, (bytes32, bytes32, bytes32, bytes32, bytes32, uint32));
+     bytes32 prevCancellationsRoot, bytes32 newCancellationsRoot,
+     bytes32 domainSeparator, uint32 matchCount) =
+        abi.decode(publicValues, (bytes32, bytes32, bytes32, bytes32, bytes32, bytes32, uint32));
 
     // 3. Validate domain separator (CRITICAL SECURITY CHECK)
     bytes32 expectedDomainSeparator = keccak256(abi.encode(
@@ -344,15 +345,17 @@ function updateRoot(bytes calldata proof, bytes calldata publicValues) external 
 
     // 4. Validate state transitions
     require(prevFilledRoot == filledRoot, "filled root mismatch");
-    require(cancRoot == cancellationsRoot, "cancellations root mismatch");
+    require(prevCancellationsRoot == cancellationsRoot, "cancellations root mismatch");
 
     // 5. Update state atomically
     bytes32 oldBalancesRoot = balancesRoot;
     balancesRoot = newBalancesRoot;
     filledRoot = newFilledRoot;
 
+    cancellationsRoot = newCancellationsRoot;
+
     emit RootUpdated(oldBalancesRoot, newBalancesRoot, prevFilledRoot,
-                     newFilledRoot, cancellationsRoot, matchCount);
+                     newFilledRoot, prevCancellationsRoot, newCancellationsRoot, matchCount);
 }
 ```
 

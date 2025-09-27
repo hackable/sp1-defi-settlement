@@ -35,7 +35,8 @@ contract Ledger {
         bytes32 indexed newBalancesRoot,
         bytes32 prevFilledRoot,
         bytes32 newFilledRoot,
-        bytes32 cancellationsRoot,
+        bytes32 prevCancellationsRoot,
+        bytes32 newCancellationsRoot,
         uint32 matchCount
     );
     event Withdrawn(bytes32 indexed root, address indexed owner, bytes32 indexed asset, uint256 amount);
@@ -47,14 +48,23 @@ contract Ledger {
         cancellationsRoot = _genesisCancellationsRoot;
     }
 
-    // publicValues ABI: (bytes32 balancesRoot, bytes32 prevFilledRoot, bytes32 filledRoot, bytes32 cancellationsRoot, bytes32 domainSeparator, uint32 matchCount)
+    // publicValues ABI: (bytes32 balancesRoot, bytes32 prevFilledRoot, bytes32 filledRoot,
+    //                    bytes32 prevCancellationsRoot, bytes32 cancellationsRoot,
+    //                    bytes32 domainSeparator, uint32 matchCount)
     function updateRoot(bytes calldata proof, bytes calldata publicValues) external {
         require(verifier.verify(proof, publicValues), "invalid proof");
-        (bytes32 newBalancesRoot, bytes32 prevFilledRoot, bytes32 newFilledRoot, bytes32 cancRoot, bytes32 domainSeparator, uint32 matchCount) =
-            abi.decode(publicValues, (bytes32, bytes32, bytes32, bytes32, bytes32, uint32));
+        (
+            bytes32 newBalancesRoot,
+            bytes32 prevFilledRoot,
+            bytes32 newFilledRoot,
+            bytes32 prevCancellationsRoot,
+            bytes32 newCancellationsRoot,
+            bytes32 domainSeparator,
+            uint32 matchCount
+        ) = abi.decode(publicValues, (bytes32, bytes32, bytes32, bytes32, bytes32, bytes32, uint32));
         require(prevFilledRoot == filledRoot, "filled root mismatch");
         // Bind to the current cancellations view so the proof cannot ignore cancels.
-        require(cancRoot == cancellationsRoot, "cancellations root mismatch");
+        require(prevCancellationsRoot == cancellationsRoot, "cancellations root mismatch");
         // Validate domainSeparator to prevent cross-chain replay attacks
         bytes32 expectedDomainSeparator = keccak256(abi.encode(
             keccak256("EIP712Domain(uint256 chainId,address verifyingContract)"),
@@ -65,12 +75,17 @@ contract Ledger {
         bytes32 oldBalancesRoot = balancesRoot;
         balancesRoot = newBalancesRoot;
         filledRoot = newFilledRoot;
-        emit RootUpdated(oldBalancesRoot, newBalancesRoot, prevFilledRoot, newFilledRoot, cancellationsRoot, matchCount);
-    }
-
-    // Optional: admin hook to update cancellationsRoot (e.g., after on-chain cancels); add access control as needed.
-    function setCancellationsRoot(bytes32 newCancellationsRoot) external {
+        bytes32 oldCancellationsRoot = cancellationsRoot;
         cancellationsRoot = newCancellationsRoot;
+        emit RootUpdated(
+            oldBalancesRoot,
+            newBalancesRoot,
+            prevFilledRoot,
+            newFilledRoot,
+            oldCancellationsRoot,
+            newCancellationsRoot,
+            matchCount
+        );
     }
 
     function withdraw(address owner, bytes32 asset, uint128 cumulativeOwed, uint128 amountToWithdraw, bytes32[] calldata proof) external {
