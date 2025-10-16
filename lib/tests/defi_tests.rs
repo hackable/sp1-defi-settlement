@@ -1,16 +1,18 @@
 use defi_lib::defi::{
-    verify_settlement, Balance, Delta, Domain, MatchFill, Order, SettlementInput, Side,
-    order_struct_hash, sign_order, addr_from_signer,
+    addr_from_signer, order_struct_hash, sign_order, verify_settlement, Balance, Delta, Domain,
+    MatchFill, Order, SettlementInput, Side,
 };
+use defi_lib::merkle::{hash_filled_leaf, hash_order_leaf};
 use defi_lib::samples;
 use k256::ecdsa::SigningKey;
 use sha3::{Digest, Keccak256};
-use defi_lib::merkle::{hash_order_leaf, hash_filled_leaf};
 
 type Address = [u8; 20];
 type Asset = [u8; 32];
 
-fn filled_leaf(order_hash: [u8; 32], amount: u128) -> [u8; 32] { hash_filled_leaf(order_hash, amount) }
+fn filled_leaf(order_hash: [u8; 32], amount: u128) -> [u8; 32] {
+    hash_filled_leaf(order_hash, amount)
+}
 
 use defi_lib::merkle::merkle_root_from_leaves as merkle_root_sorted;
 
@@ -26,9 +28,14 @@ fn leaf_hash(owner: Address, asset: Asset, amount: u128) -> [u8; 32] {
 }
 
 fn build_sample_input() -> SettlementInput {
-    let domain = Domain { chain_id: 1, exchange: [0x11; 20] };
-    let buy_sk = SigningKey::from_bytes((&[1u8; 32]).into()).expect("static test key should be valid");
-    let sell_sk = SigningKey::from_bytes((&[2u8; 32]).into()).expect("static test key should be valid");
+    let domain = Domain {
+        chain_id: 1,
+        exchange: [0x11; 20],
+    };
+    let buy_sk =
+        SigningKey::from_bytes((&[1u8; 32]).into()).expect("static test key should be valid");
+    let sell_sk =
+        SigningKey::from_bytes((&[2u8; 32]).into()).expect("static test key should be valid");
     let buyer = addr_from_signer(&buy_sk);
     let seller = addr_from_signer(&sell_sk);
     let base: Asset = [0xAA; 32];
@@ -64,44 +71,117 @@ fn build_sample_input() -> SettlementInput {
     };
 
     let (_v_b, r_b, s_b) = sign_order(&buy, &domain, &buy_sk).expect("signing buy order");
-    buy.v = _v_b; buy.r = r_b; buy.s = s_b;
+    buy.v = _v_b;
+    buy.r = r_b;
+    buy.s = s_b;
     let (_v_s, r_s, s_s) = sign_order(&sell, &domain, &sell_sk).expect("signing sell order");
-    sell.v = _v_s; sell.r = r_s; sell.s = s_s;
+    sell.v = _v_s;
+    sell.r = r_s;
+    sell.s = s_s;
 
-    let matches = vec![MatchFill { buy_idx: 0, sell_idx: 1, base_filled: 5, quote_paid: 10 }];
+    let matches = vec![MatchFill {
+        buy_idx: 0,
+        sell_idx: 1,
+        base_filled: 5,
+        quote_paid: 10,
+    }];
     let initial_balances = vec![
-        Balance { owner: buyer, asset: base, amount: 0 },
-        Balance { owner: buyer, asset: quote, amount: 100 },
-        Balance { owner: seller, asset: base, amount: 100 },
-        Balance { owner: seller, asset: quote, amount: 0 },
+        Balance {
+            owner: buyer,
+            asset: base,
+            amount: 0,
+        },
+        Balance {
+            owner: buyer,
+            asset: quote,
+            amount: 100,
+        },
+        Balance {
+            owner: seller,
+            asset: base,
+            amount: 100,
+        },
+        Balance {
+            owner: seller,
+            asset: quote,
+            amount: 0,
+        },
     ];
     let proposed_deltas = vec![
-        Delta { owner: buyer, asset: base, delta: 5 },
-        Delta { owner: buyer, asset: quote, delta: -10 },
-        Delta { owner: seller, asset: base, delta: -5 },
-        Delta { owner: seller, asset: quote, delta: 10 },
+        Delta {
+            owner: buyer,
+            asset: base,
+            delta: 5,
+        },
+        Delta {
+            owner: buyer,
+            asset: quote,
+            delta: -10,
+        },
+        Delta {
+            owner: seller,
+            asset: base,
+            delta: -5,
+        },
+        Delta {
+            owner: seller,
+            asset: quote,
+            delta: 10,
+        },
     ];
 
     let prev_filled = vec![0u128, 0u128];
     // Compute prev_filled_root and orders_root and touched proofs (2-leaf trivial proofs)
     let buy_hash = order_struct_hash(&buy);
     let sell_hash = order_struct_hash(&sell);
-    let mut entries = vec![(buy_hash, filled_leaf(buy_hash, 0)), (sell_hash, filled_leaf(sell_hash, 0))];
+    let mut entries = vec![
+        (buy_hash, filled_leaf(buy_hash, 0)),
+        (sell_hash, filled_leaf(sell_hash, 0)),
+    ];
     entries.sort_by(|a, b| a.0.cmp(&b.0));
     let prev_filled_root = merkle_root_sorted(entries.iter().map(|(_, l)| *l).collect());
-    let orders_root = merkle_root_sorted(vec![hash_order_leaf(buy_hash), hash_order_leaf(sell_hash)]);
+    let orders_root =
+        merkle_root_sorted(vec![hash_order_leaf(buy_hash), hash_order_leaf(sell_hash)]);
     // cancellations_root: both orders not canceled (value=0), same encoding as filled leaf with value 0
-    let cancellations_root = merkle_root_sorted(vec![filled_leaf(buy_hash, 0), filled_leaf(sell_hash, 0)]);
+    let cancellations_root =
+        merkle_root_sorted(vec![filled_leaf(buy_hash, 0), filled_leaf(sell_hash, 0)]);
     // Proofs: sibling leaf
     let filled_proof_buy = vec![filled_leaf(sell_hash, 0)];
     let filled_proof_sell = vec![filled_leaf(buy_hash, 0)];
     let orders_proof_buy = vec![hash_order_leaf(sell_hash)];
     let orders_proof_sell = vec![hash_order_leaf(buy_hash)];
     let touched = vec![
-        defi_lib::defi::TouchedProof { order_index: 0, order_id: buy_hash, prev_filled: 0, filled_proof: filled_proof_buy.clone(), orders_proof: orders_proof_buy.clone(), cancel_proof: filled_proof_buy },
-        defi_lib::defi::TouchedProof { order_index: 1, order_id: sell_hash, prev_filled: 0, filled_proof: filled_proof_sell.clone(), orders_proof: orders_proof_sell.clone(), cancel_proof: filled_proof_sell },
+        defi_lib::defi::TouchedProof {
+            order_index: 0,
+            order_id: buy_hash,
+            prev_filled: 0,
+            filled_proof: filled_proof_buy.clone(),
+            orders_proof: orders_proof_buy.clone(),
+            cancel_proof: filled_proof_buy,
+        },
+        defi_lib::defi::TouchedProof {
+            order_index: 1,
+            order_id: sell_hash,
+            prev_filled: 0,
+            filled_proof: filled_proof_sell.clone(),
+            orders_proof: orders_proof_sell.clone(),
+            cancel_proof: filled_proof_sell,
+        },
     ];
-    SettlementInput { domain, orders: vec![buy, sell], matches, initial_balances, proposed_deltas, timestamp: 0, prev_filled_root, prev_filled, cancellations_root, cancellations_updates: vec![], orders_root, orders_touched: touched }
+    SettlementInput {
+        domain,
+        orders: vec![buy, sell],
+        matches,
+        initial_balances,
+        proposed_deltas,
+        timestamp: 0,
+        prev_filled_root,
+        prev_filled,
+        cancellations_root,
+        cancellations_updates: vec![],
+        orders_root,
+        orders_touched: touched,
+    }
 }
 
 #[test]
@@ -117,7 +197,7 @@ fn test_successful_settlement_and_merkle_root() {
     let base = input.orders[0].base;
     let quote = input.orders[0].quote;
 
-    let buyer_base_cum = 0u128 + 5u128;   // +5
+    let buyer_base_cum = 0u128 + 5u128; // +5
     let buyer_quote_cum = 100u128 + 0u128; // -10 ignored for cum
     let seller_base_cum = 100u128 + 0u128; // -5 ignored for cum
     let seller_quote_cum = 0u128 + 10u128; // +10
@@ -134,7 +214,10 @@ fn test_successful_settlement_and_merkle_root() {
     // Check filledRoot: both buy and sell order cumulative filled = prev(0) + 5, sorted by orderId.
     let buy_hash = order_struct_hash(&input.orders[0]);
     let sell_hash = order_struct_hash(&input.orders[1]);
-    let mut fr = vec![(buy_hash, filled_leaf(buy_hash, 5)), (sell_hash, filled_leaf(sell_hash, 5))];
+    let mut fr = vec![
+        (buy_hash, filled_leaf(buy_hash, 5)),
+        (sell_hash, filled_leaf(sell_hash, 5)),
+    ];
     fr.sort_by(|a, b| a.0.cmp(&b.0));
     let expected_filled_root = merkle_root_sorted(fr.into_iter().map(|(_, l)| l).collect());
     assert_eq!(out.filled_root, expected_filled_root);
@@ -182,7 +265,9 @@ fn test_negative_balance_rejected() {
     let buyer = input.orders[0].maker;
     let quote = input.orders[0].quote;
     for b in &mut input.initial_balances {
-        if b.owner == buyer && b.asset == quote { b.amount = 5; }
+        if b.owner == buyer && b.asset == quote {
+            b.amount = 5;
+        }
     }
     let err = verify_settlement(&input).expect_err("negative balance should be rejected");
     assert!(err.contains("negative final balance"));
@@ -193,13 +278,10 @@ fn test_cross_batch_overfill_rejected() {
     let mut input = build_sample_input();
     // Set previous filled close to amount, and try to overfill this batch.
     input.prev_filled = vec![8u128, 0u128]; // buy order amount=10, prev=8
-    // Recompute prev_filled_root accordingly
+                                            // Recompute prev_filled_root accordingly
     let buy_hash = order_struct_hash(&input.orders[0]);
     let sell_hash = order_struct_hash(&input.orders[1]);
-    let leaves = vec![
-        filled_leaf(buy_hash, 8),
-        filled_leaf(sell_hash, 0),
-    ];
+    let leaves = vec![filled_leaf(buy_hash, 8), filled_leaf(sell_hash, 0)];
     let prev_root = merkle_root_sorted(leaves);
     input.prev_filled_root = prev_root;
     // This batch tries to fill 5 -> 8 + 5 > 10
@@ -241,10 +323,7 @@ fn test_canceled_order_rejected() {
     let buy_hash = order_struct_hash(&input.orders[0]);
     let sell_hash = order_struct_hash(&input.orders[1]);
     // cancellations_root: buy canceled (1), sell not canceled (0)
-    let leaves = vec![
-        filled_leaf(buy_hash, 1),
-        filled_leaf(sell_hash, 0),
-    ];
+    let leaves = vec![filled_leaf(buy_hash, 1), filled_leaf(sell_hash, 0)];
     let new_cancellations_root = merkle_root_sorted(leaves);
     input.cancellations_root = new_cancellations_root;
     // Keep existing cancel_proof values from build_sample_input() which prove value=0 for both orders.
@@ -260,35 +339,81 @@ fn test_ghost_touched_rejected() {
     input.matches.clear();
     input.proposed_deltas.clear();
     let err = verify_settlement(&input).expect_err("ghost touched should fail");
-    assert!(err.contains("touched order") || err.contains("not matched") || err.contains("touched"));
+    assert!(
+        err.contains("touched order") || err.contains("not matched") || err.contains("touched")
+    );
 }
 
 #[test]
 fn test_touched_limit_rejected() {
     // Build a minimal input but exceed touched limit (checked first in verify_settlement)
-    let input = samples::build_sample_input_with_orders(1002).expect("build sample with many orders");
+    let input =
+        samples::build_sample_input_with_orders(1002).expect("build sample with many orders");
     assert!(input.orders_touched.len() > 1000);
     let err = verify_settlement(&input).expect_err("touched limit should fail");
-    assert!(err.contains("touched orders limit") || err.contains("exceeded maximum touched orders limit"));
+    assert!(
+        err.contains("touched orders limit")
+            || err.contains("exceeded maximum touched orders limit")
+    );
 }
 
 #[test]
 fn test_price_multiplication_overflow_rejected() {
     // Construct two orders with huge price_n and base_filled to trigger checked_mul overflow in price check
-    let domain = Domain { chain_id: 1, exchange: [0x11; 20] };
-    let buy_sk = SigningKey::from_bytes((&[3u8; 32]).into()).expect("static test key should be valid");
-    let sell_sk = SigningKey::from_bytes((&[4u8; 32]).into()).expect("static test key should be valid");
+    let domain = Domain {
+        chain_id: 1,
+        exchange: [0x11; 20],
+    };
+    let buy_sk =
+        SigningKey::from_bytes((&[3u8; 32]).into()).expect("static test key should be valid");
+    let sell_sk =
+        SigningKey::from_bytes((&[4u8; 32]).into()).expect("static test key should be valid");
     let buyer = addr_from_signer(&buy_sk);
     let seller = addr_from_signer(&sell_sk);
     let base: Asset = [0xCC; 32];
     let quote: Asset = [0xDD; 32];
-    let mut buy = Order { maker: buyer, base, quote, side: Side::Buy, price_n: u128::MAX, price_d: 1, amount: u128::MAX, nonce: 1, expiry: u64::MAX, v: 0, r: [0u8; 32], s: [0u8; 32] };
-    let mut sell = Order { maker: seller, base, quote, side: Side::Sell, price_n: 1, price_d: 1, amount: u128::MAX, nonce: 2, expiry: u64::MAX, v: 0, r: [0u8; 32], s: [0u8; 32] };
+    let mut buy = Order {
+        maker: buyer,
+        base,
+        quote,
+        side: Side::Buy,
+        price_n: u128::MAX,
+        price_d: 1,
+        amount: u128::MAX,
+        nonce: 1,
+        expiry: u64::MAX,
+        v: 0,
+        r: [0u8; 32],
+        s: [0u8; 32],
+    };
+    let mut sell = Order {
+        maker: seller,
+        base,
+        quote,
+        side: Side::Sell,
+        price_n: 1,
+        price_d: 1,
+        amount: u128::MAX,
+        nonce: 2,
+        expiry: u64::MAX,
+        v: 0,
+        r: [0u8; 32],
+        s: [0u8; 32],
+    };
     let (vb, rb, sb) = sign_order(&buy, &domain, &buy_sk).expect("signing buy order");
-    buy.v = vb; buy.r = rb; buy.s = sb;
+    buy.v = vb;
+    buy.r = rb;
+    buy.s = sb;
     let (vs, rs, ss) = sign_order(&sell, &domain, &sell_sk).expect("signing sell order");
-    sell.v = vs; sell.r = rs; sell.s = ss;
-    let matches = vec![MatchFill { buy_idx: 0, sell_idx: 1, base_filled: u128::MAX, quote_paid: 1 }];
+    sell.v = vs;
+    sell.r = rs;
+    sell.s = ss;
+    let matches = vec![MatchFill {
+        buy_idx: 0,
+        sell_idx: 1,
+        base_filled: u128::MAX,
+        quote_paid: 1,
+    }];
     let input = SettlementInput {
         domain,
         orders: vec![buy, sell],
@@ -303,29 +428,74 @@ fn test_price_multiplication_overflow_rejected() {
         orders_root: [0u8; 32],
         orders_touched: vec![],
     };
-    let err = defi_lib::defi::compute_final_entries(&input).expect_err("price overflow should fail");
+    let err =
+        defi_lib::defi::compute_final_entries(&input).expect_err("price overflow should fail");
     assert!(err.contains("price multiplication overflow"));
 }
 
 #[test]
 fn test_cumulative_owed_overflow_rejected() {
     // Force cumulative owed overflow by setting initial balance at u128::MAX and positive delta
-    let domain = Domain { chain_id: 1, exchange: [0x11; 20] };
-    let buy_sk = SigningKey::from_bytes((&[5u8; 32]).into()).expect("static test key should be valid");
-    let sell_sk = SigningKey::from_bytes((&[6u8; 32]).into()).expect("static test key should be valid");
+    let domain = Domain {
+        chain_id: 1,
+        exchange: [0x11; 20],
+    };
+    let buy_sk =
+        SigningKey::from_bytes((&[5u8; 32]).into()).expect("static test key should be valid");
+    let sell_sk =
+        SigningKey::from_bytes((&[6u8; 32]).into()).expect("static test key should be valid");
     let buyer = addr_from_signer(&buy_sk);
     let seller = addr_from_signer(&sell_sk);
     let base: Asset = [0xEE; 32];
     let quote: Asset = [0xFF; 32];
-    let mut buy = Order { maker: buyer, base, quote, side: Side::Buy, price_n: 1, price_d: 1, amount: 1, nonce: 1, expiry: u64::MAX, v: 0, r: [0u8; 32], s: [0u8; 32] };
-    let mut sell = Order { maker: seller, base, quote, side: Side::Sell, price_n: 1, price_d: 1, amount: 1, nonce: 2, expiry: u64::MAX, v: 0, r: [0u8; 32], s: [0u8; 32] };
+    let mut buy = Order {
+        maker: buyer,
+        base,
+        quote,
+        side: Side::Buy,
+        price_n: 1,
+        price_d: 1,
+        amount: 1,
+        nonce: 1,
+        expiry: u64::MAX,
+        v: 0,
+        r: [0u8; 32],
+        s: [0u8; 32],
+    };
+    let mut sell = Order {
+        maker: seller,
+        base,
+        quote,
+        side: Side::Sell,
+        price_n: 1,
+        price_d: 1,
+        amount: 1,
+        nonce: 2,
+        expiry: u64::MAX,
+        v: 0,
+        r: [0u8; 32],
+        s: [0u8; 32],
+    };
     let (vb, rb, sb) = sign_order(&buy, &domain, &buy_sk).expect("signing buy order");
-    buy.v = vb; buy.r = rb; buy.s = sb;
+    buy.v = vb;
+    buy.r = rb;
+    buy.s = sb;
     let (vs, rs, ss) = sign_order(&sell, &domain, &sell_sk).expect("signing sell order");
-    sell.v = vs; sell.r = rs; sell.s = ss;
-    let matches = vec![MatchFill { buy_idx: 0, sell_idx: 1, base_filled: 1, quote_paid: 1 }];
+    sell.v = vs;
+    sell.r = rs;
+    sell.s = ss;
+    let matches = vec![MatchFill {
+        buy_idx: 0,
+        sell_idx: 1,
+        base_filled: 1,
+        quote_paid: 1,
+    }];
     let initial_balances = vec![
-        Balance { owner: seller, asset: quote, amount: u128::MAX }, // will overflow when adding +1
+        Balance {
+            owner: seller,
+            asset: quote,
+            amount: u128::MAX,
+        }, // will overflow when adding +1
     ];
     let input = SettlementInput {
         domain,
@@ -350,10 +520,9 @@ fn test_high_s_signature_rejected() {
     // secp256k1 half-order + 1 (big-endian)
     let mut s_hi = [0u8; 32];
     s_hi.copy_from_slice(&[
-        0x80,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
-        0x00,0x00,0x00,0x00,0x80,0x00,0x00,0x00,
-        0xA2,0xA8,0x91,0x8C,0xA8,0x5B,0xAF,0xE2,
-        0x20,0x16,0xD0,0xB9,0x97,0xE4,0xDF,0x61,
+        0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00,
+        0x00, 0xA2, 0xA8, 0x91, 0x8C, 0xA8, 0x5B, 0xAF, 0xE2, 0x20, 0x16, 0xD0, 0xB9, 0x97, 0xE4,
+        0xDF, 0x61,
     ]);
     input.orders[0].s = s_hi; // r and v remain valid-looking, but s is non-canonical
     let err = verify_settlement(&input).expect_err("high-s signature should be rejected");

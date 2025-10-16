@@ -3,10 +3,10 @@ use k256::ecdsa::{Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use sha3::{Digest, Keccak256};
 
-pub mod merkle;
-pub mod util;
 pub mod io;
+pub mod merkle;
 pub mod samples;
+pub mod util;
 
 // Re-exports for convenience in scripts/tests
 pub use merkle::{
@@ -14,11 +14,9 @@ pub use merkle::{
     verify_merkle_proof_sorted_keccak,
 };
 
-pub use defi::{
-    eip712_domain_separator, order_struct_hash, sign_order, addr_from_signer,
-};
+pub use defi::{addr_from_signer, eip712_domain_separator, order_struct_hash, sign_order};
 
-pub use util::{parse_hex, to_u128, to_u64, to_i128, to_side};
+pub use util::{parse_hex, to_i128, to_side, to_u128, to_u64};
 
 sol! {
     /// Public values for the DeFi settlement program.
@@ -34,7 +32,6 @@ sol! {
         uint32 matchCount;
     }
 }
-
 
 /// DeFi settlement verification module.
 pub mod defi {
@@ -80,7 +77,7 @@ pub mod defi {
         pub buy_idx: u32,
         pub sell_idx: u32,
         pub base_filled: u128, // amount of base that changes hands
-        pub quote_paid: u128,   // amount of quote buyer pays
+        pub quote_paid: u128,  // amount of quote buyer pays
     }
 
     #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -165,7 +162,11 @@ pub mod defi {
                 return Err("touched order_id mismatch".to_string());
             }
             let order_leaf = crate::merkle::hash_order_leaf(tp.order_id);
-            if !crate::merkle::verify_merkle_proof_sorted_keccak(order_leaf, &tp.orders_proof, input.orders_root) {
+            if !crate::merkle::verify_merkle_proof_sorted_keccak(
+                order_leaf,
+                &tp.orders_proof,
+                input.orders_root,
+            ) {
                 return Err("ordersRoot inclusion proof failed".to_string());
             }
             // Verify prevFilledRoot inclusion for prev value
@@ -176,12 +177,20 @@ pub mod defi {
                 }
             }
             let filled_leaf_prev = crate::merkle::hash_filled_leaf(tp.order_id, tp.prev_filled);
-            if !crate::merkle::verify_merkle_proof_sorted_keccak(filled_leaf_prev, &tp.filled_proof, input.prev_filled_root) {
+            if !crate::merkle::verify_merkle_proof_sorted_keccak(
+                filled_leaf_prev,
+                &tp.filled_proof,
+                input.prev_filled_root,
+            ) {
                 return Err("prevFilledRoot inclusion proof failed".to_string());
             }
             // cancellations_root value must be 0 (not canceled)
             let cancel_leaf = crate::merkle::hash_filled_leaf(tp.order_id, 0);
-            if !crate::merkle::verify_merkle_proof_sorted_keccak(cancel_leaf, &tp.cancel_proof, input.cancellations_root) {
+            if !crate::merkle::verify_merkle_proof_sorted_keccak(
+                cancel_leaf,
+                &tp.cancel_proof,
+                input.cancellations_root,
+            ) {
                 return Err("cancellationsRoot inclusion proof failed".to_string());
             }
             touched_map.insert(tp.order_index as usize, tp);
@@ -280,11 +289,7 @@ pub mod defi {
         // 3) Track remaining amounts per order, subtracting prev_filled to prevent cross-batch overfill.
         let mut remaining: Vec<u128> = Vec::with_capacity(input.orders.len());
         for (i, o) in input.orders.iter().enumerate() {
-            let prev = input
-                .prev_filled
-                .get(i)
-                .copied()
-                .unwrap_or(0);
+            let prev = input.prev_filled.get(i).copied().unwrap_or(0);
             if prev > o.amount {
                 return Err("prev_filled exceeds order amount".to_string());
             }
@@ -381,7 +386,9 @@ pub mod defi {
             return Err("proposed deltas size mismatch".to_string());
         }
         for (k, v) in computed.iter() {
-            let pv = proposed.get(k).ok_or_else(|| "missing proposed delta".to_string())?;
+            let pv = proposed
+                .get(k)
+                .ok_or_else(|| "missing proposed delta".to_string())?;
             if pv != v {
                 return Err("proposed delta differs from computed".to_string());
             }
@@ -390,7 +397,8 @@ pub mod defi {
         // 6) Apply deltas to initial balances and ensure non-negative.
         let mut balances: BTreeMap<(Address, Asset), i128> = BTreeMap::new();
         for b in &input.initial_balances {
-            let amt_i128 = i128::try_from(b.amount).map_err(|_| "initial balance exceeds i128 range".to_string())?;
+            let amt_i128 = i128::try_from(b.amount)
+                .map_err(|_| "initial balance exceeds i128 range".to_string())?;
             acc_delta(&mut balances, (b.owner, b.asset), amt_i128);
         }
         for (k, d) in computed.iter() {
@@ -403,7 +411,11 @@ pub mod defi {
             if v < 0 {
                 return Err("negative final balance".to_string());
             }
-            final_entries.push((k.0, k.1, u128::try_from(v).expect("final balance should fit in u128")));
+            final_entries.push((
+                k.0,
+                k.1,
+                u128::try_from(v).expect("final balance should fit in u128"),
+            ));
         }
 
         // BTreeMap iteration already yields (owner, asset) in sorted order; no extra sort needed.
@@ -441,11 +453,7 @@ pub mod defi {
         }
         let mut remaining: Vec<u128> = Vec::with_capacity(input.orders.len());
         for (i, o) in input.orders.iter().enumerate() {
-            let prev = input
-                .prev_filled
-                .get(i)
-                .copied()
-                .unwrap_or(0);
+            let prev = input.prev_filled.get(i).copied().unwrap_or(0);
             if prev > o.amount {
                 return Err("prev_filled exceeds order amount".to_string());
             }
@@ -515,7 +523,9 @@ pub mod defi {
             return Err("proposed deltas size mismatch".to_string());
         }
         for (k, v) in computed.iter() {
-            let pv = proposed.get(k).ok_or_else(|| "missing proposed delta".to_string())?;
+            let pv = proposed
+                .get(k)
+                .ok_or_else(|| "missing proposed delta".to_string())?;
             if pv != v {
                 return Err("proposed delta differs from computed".to_string());
             }
@@ -528,14 +538,16 @@ pub mod defi {
         for (k, d) in computed.into_iter() {
             if d > 0 {
                 let cur = cum.get(&k).copied().unwrap_or(0);
-                let add = u128::try_from(d).map_err(|_| "cumulative delta exceeds u128 range".to_string())?;
+                let add = u128::try_from(d)
+                    .map_err(|_| "cumulative delta exceeds u128 range".to_string())?;
                 let newv = cur
                     .checked_add(add)
                     .ok_or_else(|| "cumulative owed overflow".to_string())?;
                 cum.insert(k, newv);
             }
         }
-        let mut out: Vec<(Address, Asset, u128)> = cum.into_iter().map(|(k, v)| (k.0, k.1, v)).collect();
+        let mut out: Vec<(Address, Asset, u128)> =
+            cum.into_iter().map(|(k, v)| (k.0, k.1, v)).collect();
         out.sort_by(|a, b| cmp_key(&(a.0, a.1), &(b.0, b.1)));
         Ok(out)
     }
@@ -656,11 +668,15 @@ pub mod defi {
         let mut caches: BTreeMap<usize, PathCache> = BTreeMap::new();
 
         // Helper: compute orderId from an order
-        fn order_id_of(order: &Order) -> [u8; 32] { order_struct_hash(order) }
+        fn order_id_of(order: &Order) -> [u8; 32] {
+            order_struct_hash(order)
+        }
 
         for (idx, order) in input.orders.iter().enumerate() {
             if let Some(fill) = this_batch_fill.get(&idx).copied() {
-                let tp = touched_by_index.get(&idx).ok_or_else(|| "missing touched proof for matched order".to_string())?;
+                let tp = touched_by_index
+                    .get(&idx)
+                    .ok_or_else(|| "missing touched proof for matched order".to_string())?;
                 // Verify order_id matches the order data.
                 let oid_calc = order_id_of(order);
                 if tp.order_id != oid_calc {
@@ -668,24 +684,38 @@ pub mod defi {
                 }
                 // Verify ordersRoot inclusion
                 let order_leaf = crate::merkle::hash_order_leaf(tp.order_id);
-                if !crate::merkle::verify_merkle_proof_sorted_keccak(order_leaf, &tp.orders_proof, input.orders_root) {
+                if !crate::merkle::verify_merkle_proof_sorted_keccak(
+                    order_leaf,
+                    &tp.orders_proof,
+                    input.orders_root,
+                ) {
                     return Err("ordersRoot inclusion proof failed".to_string());
                 }
                 // Verify prevFilledRoot inclusion for prev value
                 let filled_leaf_prev = crate::merkle::hash_filled_leaf(tp.order_id, tp.prev_filled);
-                if !crate::merkle::verify_merkle_proof_sorted_keccak(filled_leaf_prev, &tp.filled_proof, input.prev_filled_root) {
+                if !crate::merkle::verify_merkle_proof_sorted_keccak(
+                    filled_leaf_prev,
+                    &tp.filled_proof,
+                    input.prev_filled_root,
+                ) {
                     return Err("prevFilledRoot inclusion proof failed".to_string());
                 }
                 // cancellations_root value must be 0 (not canceled)
                 let cancel_leaf = crate::merkle::hash_filled_leaf(tp.order_id, 0);
-                if !crate::merkle::verify_merkle_proof_sorted_keccak(cancel_leaf, &tp.cancel_proof, input.cancellations_root) {
+                if !crate::merkle::verify_merkle_proof_sorted_keccak(
+                    cancel_leaf,
+                    &tp.cancel_proof,
+                    input.cancellations_root,
+                ) {
                     return Err("cancellationsRoot inclusion proof failed".to_string());
                 }
 
                 // Optional consistency: if a prev_filled list is provided for this index, ensure equality.
                 if let Some(prev_list) = input.prev_filled.get(idx) {
                     if *prev_list != tp.prev_filled {
-                        return Err("prev_filled mismatch between list and touched proof".to_string());
+                        return Err(
+                            "prev_filled mismatch between list and touched proof".to_string()
+                        );
                     }
                 }
 
@@ -698,7 +728,9 @@ pub mod defi {
                     old_nodes.push(cur);
                 }
                 // Sanity: path reaches prev_filled_root
-                if *old_nodes.last().expect("old_nodes should not be empty") != input.prev_filled_root {
+                if *old_nodes.last().expect("old_nodes should not be empty")
+                    != input.prev_filled_root
+                {
                     return Err("filled proof does not lead to prevFilledRoot".to_string());
                 }
 
@@ -709,7 +741,15 @@ pub mod defi {
                     .ok_or_else(|| "fill amount overflow".to_string())?;
                 let new_leaf = hash_filled_leaf(tp.order_id, new_filled);
 
-                caches.insert(idx, PathCache { old_nodes, proof: tp.filled_proof.clone(), new_leaf, order_id: tp.order_id });
+                caches.insert(
+                    idx,
+                    PathCache {
+                        old_nodes,
+                        proof: tp.filled_proof.clone(),
+                        new_leaf,
+                        order_id: tp.order_id,
+                    },
+                );
             }
         }
 
@@ -729,7 +769,9 @@ pub mod defi {
 
         let max_depth = sorted.iter().map(|(_, c)| c.proof.len()).max().unwrap_or(0);
         const MAX_TREE_DEPTH: usize = 50;
-        if max_depth > MAX_TREE_DEPTH { return Err("tree depth exceeds maximum".to_string()); }
+        if max_depth > MAX_TREE_DEPTH {
+            return Err("tree depth exceeds maximum".to_string());
+        }
 
         // Map each old node hash to the cache and depth where it appears, and memoize leaf updates.
         let mut node_sources: BTreeMap<[u8; 32], (usize, usize)> = BTreeMap::new();
@@ -768,7 +810,12 @@ pub mod defi {
             Ok(node_hash)
         }
 
-        let final_root = resolve_node(input.prev_filled_root, &node_sources, &mut node_updates, &sorted)?;
+        let final_root = resolve_node(
+            input.prev_filled_root,
+            &node_sources,
+            &mut node_updates,
+            &sorted,
+        )?;
 
         // Tree consistency validation: each updated path must recompute to final_root
         for (order_idx, cache) in sorted.iter() {
@@ -798,28 +845,45 @@ pub mod defi {
     fn cancellations_root_sparse_update(input: &SettlementInput) -> Result<[u8; 32], String> {
         use std::collections::BTreeMap;
         // Early exit
-        if input.cancellations_updates.is_empty() { return Ok(input.cancellations_root); }
+        if input.cancellations_updates.is_empty() {
+            return Ok(input.cancellations_root);
+        }
 
         // Forbid updates that touch matched orders in this batch
         let mut matched_ids = BTreeMap::new();
         for m in &input.matches {
             let bi = m.buy_idx as usize;
             let si = m.sell_idx as usize;
-            if bi < input.orders.len() { matched_ids.insert(order_struct_hash(&input.orders[bi]), ()); }
-            if si < input.orders.len() { matched_ids.insert(order_struct_hash(&input.orders[si]), ()); }
+            if bi < input.orders.len() {
+                matched_ids.insert(order_struct_hash(&input.orders[bi]), ());
+            }
+            if si < input.orders.len() {
+                matched_ids.insert(order_struct_hash(&input.orders[si]), ());
+            }
         }
         for u in &input.cancellations_updates {
             if matched_ids.contains_key(&u.order_id) {
                 return Err("cancellation update for matched order in same batch".to_string());
             }
-            if !(u.new_value == 0 || u.new_value == 1) { return Err("invalid cancellation value".to_string()); }
-            if !(u.prev_value == 0 || u.prev_value == 1) { return Err("invalid previous cancellation value".to_string()); }
+            if !(u.new_value == 0 || u.new_value == 1) {
+                return Err("invalid cancellation value".to_string());
+            }
+            if !(u.prev_value == 0 || u.prev_value == 1) {
+                return Err("invalid previous cancellation value".to_string());
+            }
             // Monotonic: prevent un-cancel; allow 0->1 or 0->0 or 1->1, but forbid 1->0
-            if u.prev_value == 1 && u.new_value == 0 { return Err("cannot uncancel order".to_string()); }
+            if u.prev_value == 1 && u.new_value == 0 {
+                return Err("cannot uncancel order".to_string());
+            }
         }
 
         // Build caches analogous to filled_root_sparse_update
-        struct PathCache { old_nodes: Vec<[u8; 32]>, proof: Vec<[u8; 32]>, new_leaf: [u8; 32], order_id: [u8; 32] }
+        struct PathCache {
+            old_nodes: Vec<[u8; 32]>,
+            proof: Vec<[u8; 32]>,
+            new_leaf: [u8; 32],
+            order_id: [u8; 32],
+        }
         let mut caches: BTreeMap<[u8; 32], PathCache> = BTreeMap::new();
         for u in &input.cancellations_updates {
             // Verify prev leaf inclusion
@@ -832,11 +896,23 @@ pub mod defi {
                 cur = fold_sorted_pair(cur, *sib);
                 old_nodes.push(cur);
             }
-            if *old_nodes.last().expect("old_nodes should not be empty") != input.cancellations_root {
+            if *old_nodes.last().expect("old_nodes should not be empty") != input.cancellations_root
+            {
                 return Err("cancellation proof does not lead to cancellationsRoot".to_string());
             }
             let new_leaf = crate::merkle::hash_filled_leaf(u.order_id, u.new_value);
-            if caches.insert(u.order_id, PathCache { old_nodes, proof: u.proof.clone(), new_leaf, order_id: u.order_id }).is_some() {
+            if caches
+                .insert(
+                    u.order_id,
+                    PathCache {
+                        old_nodes,
+                        proof: u.proof.clone(),
+                        new_leaf,
+                        order_id: u.order_id,
+                    },
+                )
+                .is_some()
+            {
                 return Err("duplicate cancellation update for orderId".to_string());
             }
         }
@@ -845,7 +921,9 @@ pub mod defi {
         let mut level_maps: Vec<BTreeMap<[u8; 32], [u8; 32]>> = Vec::new();
         let max_depth = caches.values().map(|c| c.proof.len()).max().unwrap_or(0);
         const MAX_TREE_DEPTH: usize = 50;
-        if max_depth > MAX_TREE_DEPTH { return Err("tree depth exceeds maximum".to_string()); }
+        if max_depth > MAX_TREE_DEPTH {
+            return Err("tree depth exceeds maximum".to_string());
+        }
 
         // Seed level 0 replacements: old leaf -> new leaf
         level_maps.push(BTreeMap::new());
@@ -857,25 +935,37 @@ pub mod defi {
         caches_sorted.sort_by(|a, b| a.order_id.cmp(&b.order_id));
 
         for lvl in 0..max_depth {
-            while level_maps.len() <= lvl + 1 { level_maps.push(BTreeMap::new()); }
+            while level_maps.len() <= lvl + 1 {
+                level_maps.push(BTreeMap::new());
+            }
             for c in &caches_sorted {
                 if lvl < c.proof.len() {
                     let child_old = c.old_nodes[lvl];
-                    let child_new = *level_maps[lvl].get(&child_old).ok_or_else(|| "missing child node in level map".to_string())?;
+                    let child_new = *level_maps[lvl]
+                        .get(&child_old)
+                        .ok_or_else(|| "missing child node in level map".to_string())?;
                     let sib_old = c.proof[lvl];
                     let sib_new = *level_maps[lvl].get(&sib_old).unwrap_or(&sib_old);
                     let parent_new = fold_sorted_pair(child_new, sib_new);
                     let parent_old = c.old_nodes[lvl + 1];
                     match level_maps[lvl + 1].get(&parent_old) {
-                        Some(existing) if *existing != parent_new => return Err("conflicting parent updates in cancellations".to_string()),
-                        _ => { level_maps[lvl + 1].insert(parent_old, parent_new); }
+                        Some(existing) if *existing != parent_new => {
+                            return Err("conflicting parent updates in cancellations".to_string())
+                        }
+                        _ => {
+                            level_maps[lvl + 1].insert(parent_old, parent_new);
+                        }
                     }
                 }
             }
         }
 
         let h = level_maps.len().saturating_sub(1);
-        let final_root = match level_maps.get(h).and_then(|m| m.get(&input.cancellations_root)).copied() {
+        let final_root = match level_maps
+            .get(h)
+            .and_then(|m| m.get(&input.cancellations_root))
+            .copied()
+        {
             Some(root) => root,
             None => input.cancellations_root,
         };
@@ -887,7 +977,9 @@ pub mod defi {
                 let sib_new = *level_maps[i].get(&sib_old).unwrap_or(&sib_old);
                 cur = fold_sorted_pair(cur, sib_new);
             }
-            if cur != final_root { return Err("cancellations path root mismatch after merge".to_string()); }
+            if cur != final_root {
+                return Err("cancellations path root mismatch after merge".to_string());
+            }
         }
 
         Ok(final_root)
@@ -935,7 +1027,10 @@ pub mod defi {
         e.update(&order.quote);
         // side as uint8 padded
         let mut side_buf = [0u8; 32];
-        side_buf[31] = match order.side { Side::Buy => 0u8, Side::Sell => 1u8 };
+        side_buf[31] = match order.side {
+            Side::Buy => 0u8,
+            Side::Sell => 1u8,
+        };
         e.update(&side_buf);
         // price_n, price_d, amount as uint128 padded
         let mut u128buf = [0u8; 32];
@@ -974,28 +1069,43 @@ pub mod defi {
         // secp256k1 group order: FFFFFFFF FFFFFFFF FFFFFFFF FFFFFFFE BAAEDCE6 AF48A03B BFD25E8C D0364141
         // half order:          7FFFFFFF FFFFFFFF FFFFFFFF 7FFFFFFF 5D576E73 57A4501D DFE92F46 681B20A0
         const N_OVER_2: [u8; 32] = [
-            0x7F,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,
-            0xFF,0xFF,0xFF,0xFF,0x7F,0xFF,0xFF,0xFF,
-            0x5D,0x57,0x6E,0x73,0x57,0xA4,0x50,0x1D,
-            0xDF,0xE9,0x2F,0x46,0x68,0x1B,0x20,0xA0,
+            0x7F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x7F, 0xFF,
+            0xFF, 0xFF, 0x5D, 0x57, 0x6E, 0x73, 0x57, 0xA4, 0x50, 0x1D, 0xDF, 0xE9, 0x2F, 0x46,
+            0x68, 0x1B, 0x20, 0xA0,
         ];
-        if !(order.v == 27 || order.v == 28) { return false; }
-        if order.s == [0u8; 32] || order.r == [0u8; 32] { return false; }
-        if order.s > N_OVER_2 { return false; }
+        if !(order.v == 27 || order.v == 28) {
+            return false;
+        }
+        if order.s == [0u8; 32] || order.r == [0u8; 32] {
+            return false;
+        }
+        if order.s > N_OVER_2 {
+            return false;
+        }
 
         // Build recoverable signature (r,s,v)
-        let rec_id = match order.v { 27 => 0u8, 28 => 1u8, _ => unreachable!() };
-        let sig = match Signature::from_bytes((&{
-            let mut b = [0u8; 64];
-            b[..32].copy_from_slice(&order.r);
-            b[32..].copy_from_slice(&order.s);
-            b
-        }).into()) {
+        let rec_id = match order.v {
+            27 => 0u8,
+            28 => 1u8,
+            _ => unreachable!(),
+        };
+        let sig = match Signature::from_bytes(
+            (&{
+                let mut b = [0u8; 64];
+                b[..32].copy_from_slice(&order.r);
+                b[32..].copy_from_slice(&order.s);
+                b
+            })
+                .into(),
+        ) {
             Ok(s) => s,
             Err(_) => return false,
         };
         // Recover verifying key and derive maker address
-        let rid = match RecoveryId::from_byte(rec_id) { Some(r) => r, None => return false };
+        let rid = match RecoveryId::from_byte(rec_id) {
+            Some(r) => r,
+            None => return false,
+        };
         let vk = match VerifyingKey::recover_from_digest(hasher, &sig, rid) {
             Ok(vk) => vk,
             Err(_) => return false,
@@ -1014,8 +1124,8 @@ pub mod defi {
         domain: &Domain,
         sk: &k256::ecdsa::SigningKey,
     ) -> Result<(u8, [u8; 32], [u8; 32]), String> {
-        use k256::ecdsa::{signature::DigestSigner, Signature, VerifyingKey};
         use k256::ecdsa::RecoveryId;
+        use k256::ecdsa::{signature::DigestSigner, Signature, VerifyingKey};
 
         // Build EIP-712 digest
         let domain_sep = eip712_domain_separator(domain);
@@ -1039,13 +1149,21 @@ pub mod defi {
             hasher0.update(&[0x19, 0x01]);
             hasher0.update(&domain_sep);
             hasher0.update(&struct_hash);
-            let rec0 = VerifyingKey::recover_from_digest(hasher0, &sig, RecoveryId::from_byte(0).expect("0 is valid recovery id"));
+            let rec0 = VerifyingKey::recover_from_digest(
+                hasher0,
+                &sig,
+                RecoveryId::from_byte(0).expect("0 is valid recovery id"),
+            );
 
             let mut hasher1 = Keccak256::new();
             hasher1.update(&[0x19, 0x01]);
             hasher1.update(&domain_sep);
             hasher1.update(&struct_hash);
-            let rec1 = VerifyingKey::recover_from_digest(hasher1, &sig, RecoveryId::from_byte(1).expect("1 is valid recovery id"));
+            let rec1 = VerifyingKey::recover_from_digest(
+                hasher1,
+                &sig,
+                RecoveryId::from_byte(1).expect("1 is valid recovery id"),
+            );
 
             match (rec0.ok(), rec1.ok()) {
                 (Some(vk), _) if vk == vk_expected => 27,

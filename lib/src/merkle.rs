@@ -17,14 +17,20 @@ pub fn fold_sorted_pair(a: [u8; 32], b: [u8; 32]) -> [u8; 32] {
     keccak(&buf)
 }
 
-pub fn verify_merkle_proof_sorted_keccak(mut leaf: [u8; 32], proof: &[[u8; 32]], root: [u8; 32]) -> bool {
+pub fn verify_merkle_proof_sorted_keccak(
+    mut leaf: [u8; 32],
+    proof: &[[u8; 32]],
+    root: [u8; 32],
+) -> bool {
     for sib in proof {
         leaf = fold_sorted_pair(leaf, *sib);
     }
     leaf == root
 }
 
-pub fn hash_order_leaf(order_id: [u8; 32]) -> [u8; 32] { keccak(&order_id) }
+pub fn hash_order_leaf(order_id: [u8; 32]) -> [u8; 32] {
+    keccak(&order_id)
+}
 
 pub fn hash_filled_leaf(order_id: [u8; 32], value: u128) -> [u8; 32] {
     let mut buf = [0u8; 48];
@@ -43,7 +49,9 @@ pub fn hash_balances_leaf(owner: [u8; 20], asset: [u8; 32], amount: u128) -> [u8
 
 /// Build a Merkle root from a list of leaves using sorted-pair Keccak parents.
 pub fn merkle_root_from_leaves(leaves: Vec<[u8; 32]>) -> [u8; 32] {
-    if leaves.is_empty() { return keccak(&[]); }
+    if leaves.is_empty() {
+        return keccak(&[]);
+    }
     let mut level = leaves;
     while level.len() > 1 {
         let mut next: Vec<[u8; 32]> = Vec::with_capacity((level.len() + 1) / 2);
@@ -64,7 +72,9 @@ pub fn merkle_root_from_leaves(leaves: Vec<[u8; 32]>) -> [u8; 32] {
 
 /// Build a Merkle root from unordered (key, leaf) pairs by sorting by key first.
 pub fn merkle_root_from_unordered_kv(mut entries: Vec<([u8; 32], [u8; 32])>) -> [u8; 32] {
-    if entries.is_empty() { return keccak(&[]); }
+    if entries.is_empty() {
+        return keccak(&[]);
+    }
     entries.sort_by(|a, b| a.0.cmp(&b.0));
     let leaves: Vec<[u8; 32]> = entries.into_iter().map(|(_, l)| l).collect();
     merkle_root_from_leaves(leaves)
@@ -73,7 +83,9 @@ pub fn merkle_root_from_unordered_kv(mut entries: Vec<([u8; 32], [u8; 32])>) -> 
 /// Build a sorted-pair Keccak Merkle proof for a leaf at `idx` and return (proof, root).
 /// The `leaves` vector contains the leaf hashes in order.
 pub fn build_merkle_proof_sorted(leaves: Vec<[u8; 32]>, idx: usize) -> (Vec<[u8; 32]>, [u8; 32]) {
-    if leaves.is_empty() { return (vec![], keccak(&[])); }
+    if leaves.is_empty() {
+        return (vec![], keccak(&[]));
+    }
     let mut proof = Vec::new();
     let mut level = leaves;
     let mut idx = idx;
@@ -84,7 +96,11 @@ pub fn build_merkle_proof_sorted(leaves: Vec<[u8; 32]>, idx: usize) -> (Vec<[u8;
             if i + 1 < level.len() {
                 let a = level[i];
                 let b = level[i + 1];
-                if idx == i { proof.push(b); } else if idx == i + 1 { proof.push(a); }
+                if idx == i {
+                    proof.push(b);
+                } else if idx == i + 1 {
+                    proof.push(a);
+                }
                 next.push(fold_sorted_pair(a, b));
                 i += 2;
             } else {

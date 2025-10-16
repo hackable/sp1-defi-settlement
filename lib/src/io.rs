@@ -2,7 +2,10 @@ pub mod json {
     use serde::{Deserialize, Serialize};
 
     #[derive(Serialize, Deserialize)]
-    pub struct DomainJson { pub chain_id: String, pub exchange: String }
+    pub struct DomainJson {
+        pub chain_id: String,
+        pub exchange: String,
+    }
 
     #[derive(Serialize, Deserialize)]
     #[serde(rename_all = "camelCase")]
@@ -23,13 +26,26 @@ pub mod json {
 
     #[derive(Serialize, Deserialize)]
     #[serde(rename_all = "camelCase")]
-    pub struct MatchJson { pub buy_idx: u32, pub sell_idx: u32, pub base_filled: String, pub quote_paid: String }
+    pub struct MatchJson {
+        pub buy_idx: u32,
+        pub sell_idx: u32,
+        pub base_filled: String,
+        pub quote_paid: String,
+    }
 
     #[derive(Serialize, Deserialize)]
-    pub struct BalanceJson { pub owner: String, pub asset: String, pub amount: String }
+    pub struct BalanceJson {
+        pub owner: String,
+        pub asset: String,
+        pub amount: String,
+    }
 
     #[derive(Serialize, Deserialize)]
-    pub struct DeltaJson { pub owner: String, pub asset: String, pub delta: String }
+    pub struct DeltaJson {
+        pub owner: String,
+        pub asset: String,
+        pub delta: String,
+    }
 
     #[derive(Serialize, Deserialize)]
     #[serde(rename_all = "camelCase")]
@@ -51,7 +67,8 @@ pub mod json {
     #[derive(Serialize, Deserialize)]
     #[serde(rename_all = "camelCase")]
     pub struct CancellationUpdateJson {
-        #[serde(rename = "orderId")] pub order_id: String,
+        #[serde(rename = "orderId")]
+        pub order_id: String,
         pub prev_value: String,
         pub new_value: String,
         pub proof: Vec<String>,
@@ -61,7 +78,8 @@ pub mod json {
     #[serde(rename_all = "camelCase")]
     pub struct TouchedProofJson {
         pub order_index: u32,
-        #[serde(rename = "orderId")] pub order_id: String,
+        #[serde(rename = "orderId")]
+        pub order_id: String,
         pub prev_filled: String,
         pub filled_proof: Vec<String>,
         pub orders_proof: Vec<String>,

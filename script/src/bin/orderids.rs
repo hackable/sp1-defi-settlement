@@ -4,8 +4,8 @@
 use anyhow::{bail, Context, Result};
 use clap::Parser;
 // no local JSON types needed here
+use defi_lib::defi::{order_struct_hash, Order as LibOrder};
 use defi_lib::io::json as iojson;
-use defi_lib::defi::{Order as LibOrder, order_struct_hash};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Dump orderIds and a cancellations template", long_about = None)]
@@ -44,7 +44,20 @@ fn order_id_from_json(o: &JsonOrder) -> Result<[u8; 32]> {
     let v = 0u8;
     let r = [0u8; 32];
     let s = [0u8; 32];
-    let order = LibOrder { maker, base, quote, side, price_n, price_d, amount, nonce, expiry, v, r, s };
+    let order = LibOrder {
+        maker,
+        base,
+        quote,
+        side,
+        price_n,
+        price_d,
+        amount,
+        nonce,
+        expiry,
+        v,
+        r,
+        s,
+    };
     Ok(order_struct_hash(&order))
 }
 
@@ -52,29 +65,51 @@ fn order_id_from_json(o: &JsonOrder) -> Result<[u8; 32]> {
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
-struct CancelTemplateItem { order_id: String, canceled: bool }
+struct CancelTemplateItem {
+    order_id: String,
+    canceled: bool,
+}
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    if !args.sample && args.file.is_none() { bail!("provide either --sample or --file <path>"); }
+    if !args.sample && args.file.is_none() {
+        bail!("provide either --sample or --file <path>");
+    }
 
     let order_ids: Vec<[u8; 32]> = if args.sample {
         // Use shared sample builder and map to order IDs
         let input = defi_lib::samples::build_sample_input().map_err(|e| anyhow::anyhow!(e))?;
         input.orders.iter().map(|o| order_struct_hash(o)).collect()
     } else {
-        let file = args.file.as_ref().expect("file argument should be provided when not using sample");
+        let file = args
+            .file
+            .as_ref()
+            .expect("file argument should be provided when not using sample");
         let data = std::fs::read_to_string(file).with_context(|| format!("reading {}", file))?;
         // InputJson works even if cancellationsUpdates/ordersTouched are present; we only need orders
         let json: JsonInput = serde_json::from_str(&data).context("parsing JSON input")?;
-        json.orders.iter().map(|o| order_id_from_json(o)).collect::<Result<Vec<_>>>()?
+        json.orders
+            .iter()
+            .map(|o| order_id_from_json(o))
+            .collect::<Result<Vec<_>>>()?
     };
 
     let mut items: Vec<CancelTemplateItem> = Vec::with_capacity(order_ids.len());
     for oid in &order_ids {
-        items.push(CancelTemplateItem { order_id: format!("0x{}", hex::encode(oid)), canceled: false });
+        items.push(CancelTemplateItem {
+            order_id: format!("0x{}", hex::encode(oid)),
+            canceled: false,
+        });
     }
-    let s = if args.pretty { serde_json::to_string_pretty(&items)? } else { serde_json::to_string(&items)? };
-    if let Some(path) = args.out { std::fs::write(&path, s).with_context(|| format!("writing {}", path))?; } else { println!("{}", s); }
+    let s = if args.pretty {
+        serde_json::to_string_pretty(&items)?
+    } else {
+        serde_json::to_string(&items)?
+    };
+    if let Some(path) = args.out {
+        std::fs::write(&path, s).with_context(|| format!("writing {}", path))?;
+    } else {
+        println!("{}", s);
+    }
     Ok(())
 }

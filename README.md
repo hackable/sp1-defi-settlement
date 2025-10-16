@@ -32,12 +32,23 @@ The program is automatically built through `script/build.rs` when the script is 
   ```
   The `--num-orders` flag is optional (defaults to 4 orders and must remain even).
 
-- Generate an SP1 core proof (local verify):
+- Generate an SP1 proof (local verify only):
   ```sh
   cd script
   SP1_PROVER=cpu cargo run --release -- --prove --sample --num-orders 6
   ```
   Drop `--num-orders` to use the default sample size, or choose any even count to scale the demo batch.
+
+- Generate an on-chain ready Plonk proof (prints `Proof bytes` + `publicValues` and can export JSON):
+  ```sh
+  cd script
+  SP1_PROVER=cpu cargo run --release -- --prove --sample \
+    --proof-mode plonk --proof-out proof_bundle.json
+  ```
+  The CLI reports the ABI-encoded `publicValues` plus the proof bytes expected by the
+  canonical SP1 verifier contract. `--proof-out` writes a helper JSON containing these values
+  alongside the decoded roots. Swap `--proof-mode` to `groth16` if you are targeting a Groth16
+  verifier for cheaper on-chain gas.
 
 ### Leaves Dataset Builder
 

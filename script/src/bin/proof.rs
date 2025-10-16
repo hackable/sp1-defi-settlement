@@ -4,7 +4,7 @@
 use clap::Parser;
 use serde::Deserialize;
 // no direct sha3 usage; hashing handled by shared library
-use defi_lib::merkle::{hash_balances_leaf as leaf_hash, build_merkle_proof_sorted};
+use defi_lib::merkle::{build_merkle_proof_sorted, hash_balances_leaf as leaf_hash};
 use defi_lib::parse_hex;
 
 #[derive(Parser, Debug)]
@@ -48,12 +48,16 @@ fn main() -> Result<(), String> {
     let leaves_val = if value.is_array() {
         value
     } else if value.is_object() {
-        value.get("leaves").cloned().ok_or("expected top-level array or {\"leaves\": [...]} ")?
+        value
+            .get("leaves")
+            .cloned()
+            .ok_or("expected top-level array or {\"leaves\": [...]} ")?
     } else {
         return Err("unsupported JSON format".to_string());
     };
 
-    let leaves_json: Vec<LeafJson> = serde_json::from_value(leaves_val).map_err(|e| e.to_string())?;
+    let leaves_json: Vec<LeafJson> =
+        serde_json::from_value(leaves_val).map_err(|e| e.to_string())?;
 
     // Parse target
     let target_owner: Address = parse_hex(&args.owner)?;
@@ -69,13 +73,18 @@ fn main() -> Result<(), String> {
     }
 
     // Sort by (owner, then asset) to match guest
-    entries.sort_by(|a, b| match a.0.cmp(&b.0) { std::cmp::Ordering::Equal => a.1.cmp(&b.1), o => o });
+    entries.sort_by(|a, b| match a.0.cmp(&b.0) {
+        std::cmp::Ordering::Equal => a.1.cmp(&b.1),
+        o => o,
+    });
 
     // Find index and compute leaf hashes
     let mut idx = None;
     let mut leaves: Vec<[u8; 32]> = Vec::with_capacity(entries.len());
     for (i, (owner, asset, amount)) in entries.iter().copied().enumerate() {
-        if owner == target_owner && asset == target_asset { idx = Some(i); }
+        if owner == target_owner && asset == target_asset {
+            idx = Some(i);
+        }
         leaves.push(leaf_hash(owner, asset, amount));
     }
     let idx = idx.ok_or("target (owner, asset) not found in leaves")?;
@@ -85,17 +94,30 @@ fn main() -> Result<(), String> {
 
     // Output JSON
     #[derive(serde::Serialize)]
-    struct Out<'a> { amount: String, root: String, proof: Vec<String>, owner: &'a str, asset: &'a str }
+    struct Out<'a> {
+        amount: String,
+        root: String,
+        proof: Vec<String>,
+        owner: &'a str,
+        asset: &'a str,
+    }
     let out = Out {
         amount: amount.to_string(),
         root: format!("0x{}", hex::encode(root)),
-        proof: proof.into_iter().map(|h| format!("0x{}", hex::encode(h))).collect(),
+        proof: proof
+            .into_iter()
+            .map(|h| format!("0x{}", hex::encode(h)))
+            .collect(),
         owner: &args.owner,
         asset: &args.asset,
     };
 
-    let s = if args.pretty { serde_json::to_string_pretty(&out) } else { serde_json::to_string(&out) }
-        .map_err(|e| e.to_string())?;
+    let s = if args.pretty {
+        serde_json::to_string_pretty(&out)
+    } else {
+        serde_json::to_string(&out)
+    }
+    .map_err(|e| e.to_string())?;
     println!("{}", s);
     Ok(())
 }

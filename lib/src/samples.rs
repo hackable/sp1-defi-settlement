@@ -1,5 +1,8 @@
-use crate::defi::{addr_from_signer, order_struct_hash, orders_root_from_list, sign_order, Balance, Delta, Domain, MatchFill, Order, SettlementInput, Side, TouchedProof};
-use crate::merkle::{hash_order_leaf, hash_filled_leaf, build_merkle_proof_sorted};
+use crate::defi::{
+    addr_from_signer, order_struct_hash, orders_root_from_list, sign_order, Balance, Delta, Domain,
+    MatchFill, Order, SettlementInput, Side, TouchedProof,
+};
+use crate::merkle::{build_merkle_proof_sorted, hash_filled_leaf, hash_order_leaf};
 use k256::ecdsa::SigningKey;
 
 pub fn build_sample_input() -> Result<SettlementInput, String> {
@@ -13,7 +16,10 @@ pub fn build_sample_input_with_orders(num_orders: usize) -> Result<SettlementInp
     if num_orders % 2 != 0 {
         return Err("Number of orders must be even (half buy, half sell)".to_string());
     }
-    let domain = Domain { chain_id: 1, exchange: [0x11; 20] };
+    let domain = Domain {
+        chain_id: 1,
+        exchange: [0x11; 20],
+    };
     let base = [0xAA; 32];
     let quote = [0xBB; 32];
 
@@ -69,32 +75,81 @@ pub fn build_sample_input_with_orders(num_orders: usize) -> Result<SettlementInp
         };
 
         let (vb, rb, sb) = sign_order(&buy, &domain, &buy_sk)?;
-        buy.v = vb; buy.r = rb; buy.s = sb;
+        buy.v = vb;
+        buy.r = rb;
+        buy.s = sb;
         let (vs, rs, ss) = sign_order(&sell, &domain, &sell_sk)?;
-        sell.v = vs; sell.r = rs; sell.s = ss;
+        sell.v = vs;
+        sell.r = rs;
+        sell.s = ss;
 
         let buy_idx = (i * 2) as u32;
         let sell_idx = (i * 2 + 1) as u32;
         let base_filled = std::cmp::min(5 + i as u128, buy.amount.min(sell.amount));
         let quote_paid = base_filled * 2;
 
-        matches.push(MatchFill { buy_idx, sell_idx, base_filled, quote_paid });
+        matches.push(MatchFill {
+            buy_idx,
+            sell_idx,
+            base_filled,
+            quote_paid,
+        });
 
         // Add balances for this pair
-        if initial_balances.iter().find(|b| b.owner == buy_addr && b.asset == quote).is_none() {
-            initial_balances.push(Balance { owner: buy_addr, asset: base, amount: 0 });
-            initial_balances.push(Balance { owner: buy_addr, asset: quote, amount: 100 + (i * 10) as u128 });
+        if initial_balances
+            .iter()
+            .find(|b| b.owner == buy_addr && b.asset == quote)
+            .is_none()
+        {
+            initial_balances.push(Balance {
+                owner: buy_addr,
+                asset: base,
+                amount: 0,
+            });
+            initial_balances.push(Balance {
+                owner: buy_addr,
+                asset: quote,
+                amount: 100 + (i * 10) as u128,
+            });
         }
-        if initial_balances.iter().find(|b| b.owner == sell_addr && b.asset == base).is_none() {
-            initial_balances.push(Balance { owner: sell_addr, asset: base, amount: 100 + (i * 10) as u128 });
-            initial_balances.push(Balance { owner: sell_addr, asset: quote, amount: 0 });
+        if initial_balances
+            .iter()
+            .find(|b| b.owner == sell_addr && b.asset == base)
+            .is_none()
+        {
+            initial_balances.push(Balance {
+                owner: sell_addr,
+                asset: base,
+                amount: 100 + (i * 10) as u128,
+            });
+            initial_balances.push(Balance {
+                owner: sell_addr,
+                asset: quote,
+                amount: 0,
+            });
         }
 
         // Add deltas
-        proposed_deltas.push(Delta { owner: buy_addr, asset: base, delta: base_filled as i128 });
-        proposed_deltas.push(Delta { owner: buy_addr, asset: quote, delta: -(quote_paid as i128) });
-        proposed_deltas.push(Delta { owner: sell_addr, asset: base, delta: -(base_filled as i128) });
-        proposed_deltas.push(Delta { owner: sell_addr, asset: quote, delta: quote_paid as i128 });
+        proposed_deltas.push(Delta {
+            owner: buy_addr,
+            asset: base,
+            delta: base_filled as i128,
+        });
+        proposed_deltas.push(Delta {
+            owner: buy_addr,
+            asset: quote,
+            delta: -(quote_paid as i128),
+        });
+        proposed_deltas.push(Delta {
+            owner: sell_addr,
+            asset: base,
+            delta: -(base_filled as i128),
+        });
+        proposed_deltas.push(Delta {
+            owner: sell_addr,
+            asset: quote,
+            delta: quote_paid as i128,
+        });
 
         order_ids.push(order_struct_hash(&buy));
         order_ids.push(order_struct_hash(&sell));
@@ -108,10 +163,12 @@ pub fn build_sample_input_with_orders(num_orders: usize) -> Result<SettlementInp
     // Compute orders_root from IDs (library sorts by id)
     let orders_root = orders_root_from_list(&order_ids);
     // Build leaves sorted by order_id to construct proofs
-    let mut pairs: Vec<([u8; 32], usize)> = order_ids.iter().copied().zip(0..order_ids.len()).collect();
+    let mut pairs: Vec<([u8; 32], usize)> =
+        order_ids.iter().copied().zip(0..order_ids.len()).collect();
     pairs.sort_by(|a, b| a.0.cmp(&b.0));
     let sorted_indices: Vec<usize> = pairs.iter().map(|p| p.1).collect();
-    let orders_leaves_sorted: Vec<[u8; 32]> = pairs.iter().map(|(oid, _)| hash_order_leaf(*oid)).collect();
+    let orders_leaves_sorted: Vec<[u8; 32]> =
+        pairs.iter().map(|(oid, _)| hash_order_leaf(*oid)).collect();
     let mut filled_leaves_sorted: Vec<[u8; 32]> = Vec::with_capacity(pairs.len());
     for (oid, _) in pairs.iter() {
         let orig_idx = order_ids
@@ -144,7 +201,7 @@ pub fn build_sample_input_with_orders(num_orders: usize) -> Result<SettlementInp
             orders_proof,
             cancel_proof: filled_proof,
         });
-    };
+    }
 
     Ok(SettlementInput {
         domain,
